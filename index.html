@@ -195,15 +195,6 @@
     .sheet-table-wrap { display: none; }
     .sheet-cards { display: block; }
   }
-  #printEnvelope { display: none; }
-  @media print {
-    body > *:not(#printEnvelope) { display: none !important; }
-    #printEnvelope { display: block !important; }
-    @page { size: landscape; margin: 14mm; }
-    .env { font-family: Arial, sans-serif; color: #000; padding: 20mm 0 0 55mm; }
-    .env-l { font-size: 11pt; text-transform: uppercase; letter-spacing: .08em; margin-top: 8mm; }
-    .env-v { font-size: 20pt; font-weight: 700; }
-  }
 </style>
 </head>
 <body>
@@ -226,9 +217,63 @@
 (function () {
   if (typeof window.claude !== 'undefined') return;
   var CFG_KEY = 'panelTesoreriaCfg';
-  var COLS = ['clients','suppliers','works','invoicesOut','invoicesIn','fixedExpenses','fixedExpensePayments','workBudgetItems','priceListItems','invoiceOutPayments','invoiceInPayments'];
+  var COLS = ['clients','suppliers','works','invoicesOut','invoicesIn','fixedExpenses','fixedExpensePayments','workBudgetItems','priceListItems','invoiceOutPayments','invoiceInPayments','bankAccounts','bankBalances','oneOffExpenses'];
   var getCfg = function () { try { return JSON.parse(localStorage.getItem(CFG_KEY) || 'null'); } catch (e) { return null; } };
   var setCfg = function (c) { try { if (c) localStorage.setItem(CFG_KEY, JSON.stringify(c)); else localStorage.removeItem(CFG_KEY); } catch (e) {} };
+
+  /* ---------- defensa de formatos: fechas, importes y casillas que lleguen como texto ---------- */
+  var DATE_F = ['date','dueDate','paidDate','collectedDate','nextDate','remittanceDate','emissionDate','issueDate'];
+  var NUM_F = ['amount','budget','paymentTermDays','installmentsRemaining','quantity','unitPrice','price','base','iva','ivaAmount','ivaRate'];
+  var BOOL_F = ['collected','paid','remesado','autoIvaCalc','received','archived','ivaExempt'];
+  var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+  var okDate = function (y, m, d) { var t = new Date(Date.UTC(y, m - 1, d)); return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d; };
+  var iso = function (y, m, d) { return okDate(y, m, d) ? y + '-' + pad(m) + '-' + pad(d) : null; };
+  function normDate(v) {
+    if (v === '' || v == null) return { v: v };
+    if (typeof v === 'number' || (typeof v === 'string' && /^\d{5}$/.test(v.trim()))) {
+      var n = Number(v); if (n > 20000 && n < 80000) return { v: new Date(Date.UTC(1899, 11, 30) + n * 86400000).toISOString().slice(0, 10), fixed: true };
+      return { v: v, bad: true };
+    }
+    if (typeof v !== 'string') return { v: v, bad: true };
+    var s = v.trim(), m;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return { v: okDate(+s.slice(0, 4), +s.slice(5, 7), +s.slice(8, 10)) ? s : v, bad: !okDate(+s.slice(0, 4), +s.slice(5, 7), +s.slice(8, 10)) };
+    if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ]/))) { var r = iso(+m[1], +m[2], +m[3]); return r ? { v: r, fixed: true } : { v: v, bad: true }; }
+    if ((m = s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2}|\d{4})$/))) {
+      var d = +m[1], mo = +m[2], y = +m[3]; if (m[3].length === 2) y += 2000;
+      if (mo > 12 && d <= 12) { var t = d; d = mo; mo = t; } /* día/mes por defecto; si el mes no puede ser mayor de 12, se entiende mes/día */
+      var r2 = iso(y, mo, d); return r2 ? { v: r2, fixed: true } : { v: v, bad: true };
+    }
+    return { v: v, bad: true };
+  }
+  function normNum(v) {
+    if (typeof v !== 'string') return { v: v };
+    var s = v.replace(/[\s\u00a0€]/g, '');
+    if (s === '') return { v: v };
+    if (/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) return { v: Number(s.replace(/\./g, '').replace(',', '.')), fixed: true };
+    if (/^-?\d+,\d+$/.test(s)) return { v: Number(s.replace(',', '.')), fixed: true };
+    if (/^-?\d+(\.\d+)?$/.test(s)) return { v: Number(s), fixed: true };
+    return { v: v, bad: true };
+  }
+  function normBool(v) {
+    if (typeof v !== 'string') return { v: v };
+    var s = v.trim().toLowerCase();
+    if (['true', 'verdadero', 'si', 'sí', 'yes', '1', 'x'].indexOf(s) >= 0) return { v: true, fixed: true };
+    if (['false', 'falso', 'no', '0', ''].indexOf(s) >= 0) return { v: false, fixed: true };
+    return { v: v, bad: true };
+  }
+  var rare = { fixed: 0, bad: [] };
+  function normRecord(c, id, d) {
+    DATE_F.forEach(function (k) { if (k in d) { var r = normDate(d[k]); d[k] = r.v; if (r.fixed) rare.fixed++; if (r.bad) rare.bad.push(c + ' · ' + id + ' · ' + k + ' = ' + JSON.stringify(d[k])); } });
+    NUM_F.forEach(function (k) { if (k in d) { var r = normNum(d[k]); d[k] = r.v; if (r.fixed) rare.fixed++; if (r.bad) rare.bad.push(c + ' · ' + id + ' · ' + k + ' = ' + JSON.stringify(d[k])); } });
+    BOOL_F.forEach(function (k) { if (k in d) { var r = normBool(d[k]); d[k] = r.v; if (r.fixed) rare.fixed++; if (r.bad) rare.bad.push(c + ' · ' + id + ' · ' + k + ' = ' + JSON.stringify(d[k])); } });
+    return d;
+  }
+  function rareBanner() {
+    var el = document.getElementById('rareBanner');
+    if (!rare.bad.length) { if (el) el.remove(); return; }
+    if (!el) { el = document.createElement('div'); el.id = 'rareBanner'; el.style.cssText = 'position:fixed;left:8px;bottom:6px;font:12px Arial;background:#fff3cd;color:#7a5b00;border:1px solid #e0c36a;border-radius:6px;padding:5px 9px;z-index:9999;cursor:pointer'; document.body.appendChild(el); el.onclick = function () { alert('Valores que no se reconocen como fecha, importe o casilla (revisa la hoja):\n\n' + rare.bad.slice(0, 15).join('\n') + (rare.bad.length > 15 ? '\n… y ' + (rare.bad.length - 15) + ' más' : '')); }; }
+    el.textContent = '⚠ ' + rare.bad.length + ' dato(s) con formato no reconocido: pulsa para verlos';
+  }
 
   /* ---------- modo conectado: hoja de Google mediante Apps Script ---------- */
   function makeRemote(cfg) {
@@ -247,12 +292,13 @@
       }
     }
     async function load() {
-      var all = (await call('getAll')).data;
+      var all = (await call('getAll')).data; rare.fixed = 0; rare.bad = [];
       COLS.forEach(function (c) {
-        var rows = (all[c] || []).map(function (x) { var d = {}; try { d = JSON.parse(x.json || '{}'); } catch (e) {} return { id: x.id, data: d }; });
+        var rows = (all[c] || []).map(function (x) { var d = {}; try { d = JSON.parse(x.json || '{}'); } catch (e) { rare.bad.push(c + ' · ' + x.id + ' · JSON ilegible'); } return { id: x.id, data: normRecord(c, x.id, d) }; });
         var key = JSON.stringify(rows), changed = last[c] !== key; last[c] = key; cache[c] = rows;
         if (changed && ready) notify(c);
       });
+      rareBanner();
     }
     var refresh = function () { load().catch(function () {}); };
     /* las escrituras se hacen una a una y en orden */
@@ -316,7 +362,7 @@
       var el = document.getElementById('gate');
       if (!el) { el = document.createElement('div'); el.id = 'gate'; el.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#f3f1ec;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;padding:16px'; document.body.appendChild(el); }
       var inp = 'width:100%;box-sizing:border-box;padding:9px;margin:4px 0 12px;font-size:14px';
-      el.innerHTML = '<div style="background:#fff;padding:28px;border-radius:12px;max-width:420px;width:100%;box-shadow:0 4px 24px rgba(0,0,0,.15)"><h2 style="margin:0 0 6px">Panel de Tesorería</h2><p style="color:#555;font-size:14px;margin:0 0 14px">Introduce la dirección del servicio y tu clave. Se guardan solo en este dispositivo.</p>'
+      el.innerHTML = '<div style="background:#fff;padding:28px;border-radius:12px;max-width:420px;width:100%;box-shadow:0 4px 24px rgba(0,0,0,.15)"><img src="logo.png" alt="" style="display:block;max-width:100%;max-height:70px;margin:0 auto 12px" onerror="this.remove()"><h2 style="margin:0 0 6px">Panel de Tesorería</h2><p style="color:#555;font-size:14px;margin:0 0 14px">Introduce la dirección del servicio y tu clave. Se guardan solo en este dispositivo.</p>'
         + '<label style="font-size:13px">Dirección del servicio (termina en /exec)</label><input id="gUrl" style="' + inp + '" placeholder="https://script.google.com/macros/s/.../exec">'
         + '<label style="font-size:13px">Clave</label><input id="gKey" type="password" style="' + inp + '">'
         + '<div id="gMsg" style="color:#b3261e;font-size:13px;min-height:18px;margin-bottom:8px">' + (msg || '') + '</div>'
@@ -364,6 +410,7 @@ const SECTIONS = [
   { id: 'clients', label: 'Clientes' },
   { id: 'suppliers', label: 'Proveedores' },
   { id: 'works', label: 'Obras' },
+  { id: 'banks', label: 'Bancos' },
   { id: 'provision', label: 'Provisión' },
   { id: 'effects', label: 'Efectos y remesas' },
   { id: 'sheet', label: 'Hoja mensual' },
@@ -389,9 +436,9 @@ const WORK_STATUSES = ['Presupuestada', 'Contratada', 'Finalizada'];
 
 let db = null;
 let state = {
-  clients: [], suppliers: [], works: [], invoicesOut: [], invoicesIn: [], fixedExpenses: [], fixedExpensePayments: [],
+  clients: [], suppliers: [], works: [], invoicesOut: [], invoicesIn: [], fixedExpenses: [], fixedExpensePayments: [], bankAccounts: [], bankBalances: [], oneOffExpenses: [],
   workBudgetItems: [], priceListItems: [], invoiceOutPayments: [], invoiceInPayments: [],
-  loaded: { clients:false, suppliers:false, works:false, invoicesOut:false, invoicesIn:false, fixedExpenses:false, fixedExpensePayments:false, workBudgetItems:false, priceListItems:false, invoiceOutPayments:false, invoiceInPayments:false },
+  loaded: { clients:false, suppliers:false, works:false, invoicesOut:false, invoicesIn:false, fixedExpenses:false, fixedExpensePayments:false, bankAccounts:false, bankBalances:false, oneOffExpenses:false, workBudgetItems:false, priceListItems:false, invoiceOutPayments:false, invoiceInPayments:false },
 };
 let currentSection = 'dashboard';
 let currentDetail = { type: null, id: null };
@@ -409,7 +456,9 @@ let sheetMonth = dayjs().format('YYYY-MM');
 // ---------- helpers ----------
 function fmtMoney(n) {
   n = Number(n) || 0;
-  return n.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+  const t = Math.abs(n).toFixed(2), neg = n < 0 && Number(t) !== 0;
+  const [ent, dec] = t.split('.');
+  return (neg ? '-' : '') + ent.replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ',' + dec + ' €';
 }
 function fmtDate(iso) {
   if (!iso) return '—';
@@ -438,12 +487,12 @@ function showToast(msg) {
 
 function outLines(inv) {
   const custom = state.invoiceOutPayments.filter(p => p.invoiceId === inv.id);
-  if (!custom.length) return [{ id:null, invoiceId:inv.id, amount:Number(inv.amount||0), date:inv.date, dueDate:inv.dueDate, method:inv.paymentMethod, issuingBank:inv.issuingBank||'', remesado:!!inv.remesado, remittanceBank:inv.remittanceBank||'', collected:!!inv.collected, collectedDate:inv.collectedDate||'', _implicit:true }];
+  if (!custom.length) return [{ id:null, invoiceId:inv.id, amount:Number(inv.amount||0), date:inv.date, dueDate:inv.dueDate, method:inv.paymentMethod, issuingBank:inv.issuingBank||'', remesado:!!inv.remesado, remittanceBank:inv.remittanceBank||'', collected:!!inv.collected, collectedDate:inv.collectedDate||'', collectedBank:inv.collectedBank||'', emissionDate:inv.emissionDate||'', _implicit:true }];
   return custom;
 }
 function inLines(inv) {
   const custom = state.invoiceInPayments.filter(p => p.invoiceId === inv.id);
-  if (!custom.length) return [{ id:null, invoiceId:inv.id, amount:Number(inv.amount||0), date:inv.date, dueDate:inv.dueDate, method:inv.paymentMethod||'Transferencia', note:inv.note||'', paid:!!inv.paid, paidDate:inv.paidDate||'', _implicit:true }];
+  if (!custom.length) return [{ id:null, invoiceId:inv.id, amount:Number(inv.amount||0), date:inv.date, dueDate:inv.dueDate, method:inv.paymentMethod||'Transferencia', note:inv.note||'', paid:!!inv.paid, paidDate:inv.paidDate||'', paidBank:inv.paidBank||'', emissionDate:inv.emissionDate||'', _implicit:true }];
   return custom;
 }
 function outPendingAmount(inv) { return outLines(inv).filter(l=>!l.collected).reduce((s,l)=>s+Number(l.amount||0),0); }
@@ -641,9 +690,9 @@ function computeAutoIva(mKey) {
   const end = dayjs(mKey + '-01').endOf('month');
   const start = dayjs(mKey + '-01').subtract(2, 'month').startOf('month');
   const inRange = (d) => { const dd = dayjs(d); return dd.isValid() && !dd.isBefore(start) && !dd.isAfter(end); };
-  const facturado = state.invoicesOut.filter(i=>inRange(i.date)).reduce((s,i)=>s+Number(i.amount||0),0);
-  const recibido = state.invoicesIn.filter(i=>inRange(i.date)).reduce((s,i)=>s+Number(i.amount||0),0);
-  return (facturado - recibido) * 0.21;
+  const facturado = state.invoicesOut.filter(i=>inRange(i.date) && !i.ivaExempt).reduce((s,i)=>s+Number(i.amount||0),0);
+  const recibido = state.invoicesIn.filter(i=>inRange(i.date) && !i.ivaExempt).reduce((s,i)=>s+Number(i.amount||0),0);
+  return (facturado - recibido) * 21 / 121;
 }
 
 // ---------- db init & seed ----------
@@ -654,7 +703,7 @@ async function initDb() {
   await maybeSeed();
 }
 function subscribeAll() {
-  const cols = ['clients','suppliers','works','invoicesOut','invoicesIn','fixedExpenses','fixedExpensePayments','workBudgetItems','priceListItems','invoiceOutPayments','invoiceInPayments'];
+  const cols = ['clients','suppliers','works','invoicesOut','invoicesIn','fixedExpenses','fixedExpensePayments','bankAccounts','bankBalances','oneOffExpenses','workBudgetItems','priceListItems','invoiceOutPayments','invoiceInPayments'];
   cols.forEach(col => {
     db.collection(col).onSnapshot(
       snap => { state[col] = snap.docs.map(d => ({ id: d.id, ...d.data() })); state.loaded[col] = true; render(); },
@@ -763,6 +812,7 @@ function render() {
     case 'clients': return renderClients();
     case 'suppliers': return renderSuppliers();
     case 'works': return renderWorks();
+    case 'banks': return renderBanks();
     case 'provision': return renderProvision();
     case 'effects': return renderEffects();
     case 'sheet': return renderSheet();
@@ -1286,6 +1336,64 @@ function renderClientDetail(id) {
 }
 
 // ---------- SUPPLIERS ----------
+/* ---------- BANCOS Y EFECTIVO ---------- */
+let banksOpen = new Set();
+const bankList = () => [{ id: CASH, name: 'Efectivo' }, ...state.bankAccounts.filter(b => !b.archived)];
+function lastBalance(bankId) {
+  const rows = state.bankBalances.filter(b => b.bankId === bankId && b.date).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return rows.length ? rows[rows.length - 1] : null;
+}
+const lineBank = (l, field) => l[field] || (l.method === 'Efectivo' ? CASH : '');
+function bankMoves(bankId, after) {
+  let cob = 0, pag = 0;
+  allOutLines().forEach(l => { if (l.collected && l.collectedDate > after && lineBank(l, 'collectedBank') === bankId) cob += Number(l.amount || 0); });
+  allInLines().forEach(l => { if (l.paid && l.paidDate > after && lineBank(l, 'paidBank') === bankId) pag += Number(l.amount || 0); });
+  state.fixedExpensePayments.forEach(p => { const e = byId(state.fixedExpenses, p.expenseId); if (p.date > after && (p.bank || e?.bank || '') === bankId) pag += Number(p.amount || 0); });
+  state.oneOffExpenses.forEach(x => { if (x.paid && x.paidDate > after && (x.paidBank || x.bank || '') === bankId) pag += Number(x.amount || 0); });
+  return { cob, pag };
+}
+function bankBalanceNow(bankId) {
+  const lb = lastBalance(bankId); if (!lb) return null;
+  const m = bankMoves(bankId, lb.date);
+  return { lb, m, total: Number(lb.amount || 0) + m.cob - m.pag };
+}
+function renderBanks() {
+  const list = bankList().map(b => ({ b, r: bankBalanceNow(b.id) }));
+  const known = list.filter(x => x.r).reduce((s, x) => s + x.r.total, 0);
+  const oneOff = state.oneOffExpenses.slice().sort((a, b) => (a.dueDate || '') < (b.dueDate || '') ? -1 : 1);
+  document.getElementById('main').innerHTML = `
+    <div class="topbar"><div><h1>Bancos y efectivo</h1><div class="subtitle">Saldo estimado = último saldo anotado + cobros − pagos con fecha posterior</div></div>
+      <div><button class="btn" id="addBank">+ Banco</button> <button class="btn btn-primary" id="addBal">+ Anotar saldo</button></div></div>
+    <div class="card"><div class="table-wrap"><table>
+      <thead><tr><th>Cuenta</th><th>Último saldo anotado</th><th>Cobros</th><th>Pagos</th><th>Saldo estimado</th><th></th></tr></thead>
+      <tbody>
+        ${list.map(({ b, r }) => `
+          <tr>
+            <td>${escapeHtml(b.name)}</td>
+            <td class="num">${r ? fmtMoney(r.lb.amount) + ' <span class="muted">(' + fmtDate(r.lb.date) + ')</span>' : '<span class="muted">Sin saldo anotado</span>'}</td>
+            <td class="num" style="color:var(--income, #1b7f4b)">${r ? '+' + fmtMoney(r.m.cob) : '—'}</td>
+            <td class="num" style="color:var(--expense, #b3261e)">${r ? '−' + fmtMoney(r.m.pag) : '—'}</td>
+            <td class="num"><strong>${r ? fmtMoney(r.total) : '—'}</strong></td>
+            <td><button class="btn btn-sm" data-bal="${b.id}">Anotar saldo</button> <button class="btn btn-sm" data-hist="${b.id}">${banksOpen.has(b.id) ? 'Ocultar' : 'Histórico'}</button>${b.id !== CASH ? ` <button class="btn btn-sm" data-bedit="${b.id}">Editar</button>` : ''}</td>
+          </tr>
+          ${banksOpen.has(b.id) ? `<tr><td colspan="6" style="background:var(--bg-soft, #f6f4ef)">${state.bankBalances.filter(x => x.bankId === b.id).sort((p, q) => (p.date < q.date ? 1 : -1)).map(x => `<div data-balid="${x.id}" style="cursor:pointer;padding:3px 0">${fmtDate(x.date)} · <strong>${fmtMoney(x.amount)}</strong> ${x.note ? '· ' + escapeHtml(x.note) : ''}</div>`).join('') || '<span class="muted">Sin anotaciones todavía.</span>'}</td></tr>` : ''}`).join('')}
+        <tr><td><strong>Total disponible estimado</strong></td><td></td><td></td><td></td><td class="num"><strong>${fmtMoney(known)}</strong></td><td></td></tr>
+      </tbody></table></div></div>
+    <div class="card"><div class="topbar" style="margin-bottom:8px"><h2 style="margin:0">Gastos puntuales</h2><button class="btn btn-primary" id="addOneOff">+ Gasto puntual</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Concepto</th><th>Vencimiento</th><th>Se paga por</th><th>Importe</th><th>Estado</th></tr></thead><tbody>
+        ${oneOff.length === 0 ? '<tr><td colspan="5" class="empty">Todavía no hay gastos puntuales.</td></tr>' : ''}
+        ${oneOff.map(x => `<tr data-oo="${x.id}" style="cursor:pointer"><td>${escapeHtml(x.concept)}</td><td class="mono">${fmtDate(x.dueDate)}</td><td>${escapeHtml(bankOptions().find(o => o.value === (x.paidBank || x.bank || ''))?.label || '—')}</td><td class="num" style="color:var(--expense, #b3261e)">−${fmtMoney(x.amount)}</td><td>${x.paid ? 'Pagado ' + fmtDate(x.paidDate) : 'Pendiente'}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+  document.getElementById('addBank').onclick = () => openEntityModal('bankAccount');
+  document.getElementById('addBal').onclick = () => openEntityModal('bankBalance', null, { date: todayISO() });
+  document.getElementById('addOneOff').onclick = () => openEntityModal('oneOffExpense');
+  document.querySelectorAll('[data-bal]').forEach(b => b.onclick = () => openEntityModal('bankBalance', null, { bankId: b.dataset.bal, date: todayISO() }));
+  document.querySelectorAll('[data-bedit]').forEach(b => b.onclick = () => openEntityModal('bankAccount', b.dataset.bedit));
+  document.querySelectorAll('[data-hist]').forEach(b => b.onclick = () => { banksOpen.has(b.dataset.hist) ? banksOpen.delete(b.dataset.hist) : banksOpen.add(b.dataset.hist); renderBanks(); });
+  document.querySelectorAll('[data-balid]').forEach(d => d.onclick = () => openEntityModal('bankBalance', d.dataset.balid));
+  document.querySelectorAll('[data-oo]').forEach(tr => tr.onclick = () => openEntityModal('oneOffExpense', tr.dataset.oo));
+}
+
 function renderSuppliers() {
   const rows = state.suppliers.map(s => {
     const invs = state.invoicesIn.filter(i=>i.supplierId===s.id);
@@ -1478,59 +1586,93 @@ function buildProvision(months) {
   return rows;
 }
 
-function renderProvision() {
-  const months = nextMonths(12);
-  if (!provisionMonth || !months.includes(provisionMonth)) provisionMonth = months[0];
-  const r = buildProvision(months);
-  const sum = arr => months.reduce((s,m)=>s+arr[m],0);
-  const rowDef = [
-    { label: 'Ingresos previstos (cobros clientes)', data: r.ingresos, cls: 'pos' },
-    { label: 'Gastos fijos', data: r.gasto, cls: 'neg' },
-    { label: 'Préstamos / aplazamientos', data: r.prestamo, cls: 'neg' },
-    { label: 'Impuestos', data: r.impuesto, cls: 'neg' },
-    { label: 'Nóminas', data: r.nomina, cls: 'neg' },
-    { label: 'Pagos a proveedores', data: r.proveedores, cls: 'neg' },
-  ];
-
-  let bodyHtml = '';
-  if (provisionView === 'tabla') {
-    bodyHtml = `
-    <div class="card"><div class="table-wrap">
-      <table class="prov-table">
-        <thead><tr><th>Concepto</th>${months.map(m=>`<th>${monthLabel(m)}</th>`).join('')}<th>Total</th></tr></thead>
-        <tbody>
-          ${rowDef.map(row=>`<tr><td>${row.label}</td>${months.map(m=>`<td class="${row.cls==='neg'&&row.data[m]>0?'neg':''}">${row.data[m]?fmtMoney(row.data[m]):'—'}</td>`).join('')}<td class="${row.cls==='neg'?'neg':'pos'}">${fmtMoney(sum(row.data))}</td></tr>`).join('')}
-          <tr class="total"><td>Total pagos previstos</td>${months.map(m=>`<td class="neg">${fmtMoney(r.totalPagos[m])}</td>`).join('')}<td class="neg">${fmtMoney(sum(r.totalPagos))}</td></tr>
-          <tr class="net"><td>Saldo neto previsto</td>${months.map(m=>`<td class="${r.net[m]>=0?'pos':'neg'}">${fmtMoney(r.net[m])}</td>`).join('')}<td class="${sum(r.net)>=0?'pos':'neg'}">${fmtMoney(sum(r.net))}</td></tr>
-        </tbody>
-      </table>
-    </div></div>`;
-  } else {
-    const m = provisionMonth;
-    bodyHtml = `
-    <div class="card">
-      <div class="month-nav">
-        <button class="btn btn-sm" id="prevMonth">←</button>
-        <select id="monthSelect">${months.map(mm=>`<option value="${mm}" ${mm===m?'selected':''}>${monthLabel(mm)}</option>`).join('')}</select>
-        <button class="btn btn-sm" id="nextMonth">→</button>
-      </div>
-      <div class="month-card-list">
-        ${rowDef.map(row=>`<div class="row"><span>${row.label}</span><span class="mono">${fmtMoney(row.data[m])}</span></div>`).join('')}
-        <div class="row total"><span>Total pagos previstos</span><span class="mono">${fmtMoney(r.totalPagos[m])}</span></div>
-        <div class="row net ${r.net[m]>=0?'pos':'neg'}"><span>Saldo neto previsto</span><span class="mono">${fmtMoney(r.net[m])}</span></div>
-      </div>
-    </div>`;
+let provisionHorizon = 3;
+const PROV_CATS = { cobro: 'Cobro asegurado', proveedor: 'Pago a proveedor', gasto: 'Gasto fijo', prestamo: 'Préstamo', impuesto: 'Impuesto', nomina: 'Nómina', iva: 'IVA trimestral', puntual: 'Gasto puntual' };
+function ivaQuarterItems(today, end) {
+  const out = [];
+  for (let y = today.year() - 1; y <= end.year(); y++) for (let q = 0; q < 4; q++) {
+    const qs = dayjs(new Date(y, q * 3, 1)), qe = qs.add(2, 'month').endOf('month');
+    const due = q === 3 ? dayjs(new Date(y + 1, 0, 30)) : qe.add(1, 'day').date(20);
+    if (due.isBefore(today, 'day') || due.isAfter(end, 'day')) continue;
+    const inQ = i => { const d = dayjs(i.date); return d.isValid() && !d.isBefore(qs, 'day') && !d.isAfter(qe, 'day') && !i.ivaExempt; };
+    const net = (state.invoicesOut.filter(inQ).reduce((s, i) => s + Number(i.amount || 0), 0) - state.invoicesIn.filter(inQ).reduce((s, i) => s + Number(i.amount || 0), 0)) * 21 / 121;
+    if (net > 0.005) out.push({ date: due.format('YYYY-MM-DD'), kind: 'out', cat: 'iva', label: `IVA ${q + 1}T ${y}` + (qe.isAfter(today, 'day') ? ' (estimado con lo registrado hasta hoy)' : ''), amount: net, bank: '' });
   }
-
+  return out;
+}
+function provisionItems(months) {
+  const today = dayjs().startOf('day'), end = dayjs(months[months.length - 1] + '-01').endOf('month'), items = [];
+  const cm = months[0];
+  allOutLines().filter(l => !l.collected && EFFECT_METHODS.includes(l.method)).forEach(l => items.push({ date: l.dueDate || todayISO(), kind: 'in', cat: 'cobro', label: `${byId(state.clients, l.clientId)?.name || '—'} · ${l.invoiceNumber || ''} (${l.method})`, amount: Number(l.amount || 0), bank: '' }));
+  allInLines().filter(l => !l.paid).forEach(l => items.push({ date: l.dueDate || todayISO(), kind: 'out', cat: 'proveedor', label: `${byId(state.suppliers, l.supplierId)?.name || '—'} · ${l.invoiceNumber || ''} (${l.method})`, amount: Number(l.amount || 0), bank: '' }));
+  state.oneOffExpenses.filter(x => !x.paid).forEach(x => items.push({ date: x.dueDate || todayISO(), kind: 'out', cat: 'puntual', label: x.concept, amount: Number(x.amount || 0), bank: x.bank || '' }));
+  state.fixedExpenses.filter(e => !(e.category === 'impuesto' && e.autoIvaCalc)).forEach(e => {
+    const cat = e.category || 'gasto', arr = expArrears(e, cm);
+    if (arr > 0.005) items.push({ date: dayjs(cm + '-01').subtract(1, 'day').format('YYYY-MM-DD'), kind: 'out', cat, label: `${e.concept} (atrasos)`, amount: arr, bank: e.bank || '' });
+    months.forEach(m => {
+      const pend = expenseMonthAmount(e, m) - expPaid(e.id, m); if (pend <= 0.005) return;
+      const dim = dayjs(m + '-01').daysInMonth(), day = Math.min(dayjs(e.nextDate).isValid() ? dayjs(e.nextDate).date() : 1, dim);
+      items.push({ date: `${m}-${String(day).padStart(2, '0')}`, kind: 'out', cat, label: e.concept, amount: pend, bank: e.bank || '' });
+    });
+  });
+  ivaQuarterItems(today, end).forEach(i => items.push(i));
+  return items.filter(i => !dayjs(i.date).isAfter(end, 'day')).map(i => ({ ...i, overdue: dayjs(i.date).isBefore(today, 'day') })).sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+}
+function renderProvision() {
+  const months = nextMonths(provisionHorizon);
+  if (!provisionMonth || !nextMonths(12).includes(provisionMonth)) provisionMonth = months[0];
+  const items = provisionItems(months);
+  const banks = bankList().map(b => ({ b, r: bankBalanceNow(b.id) }));
+  const disponible = banks.reduce((s, x) => s + (x.r ? x.r.total : 0), 0), sinSaldo = banks.filter(x => !x.r).length;
+  const bucket = i => i.overdue ? 'venc' : monthKey(i.date);
+  const cols = ['venc', ...months];
+  const sumBy = (pred, k) => items.filter(i => pred(i) && bucket(i) === k).reduce((s, i) => s + i.amount, 0);
+  const asegurados = items.filter(i => i.kind === 'in').reduce((s, i) => s + i.amount, 0);
+  const oblig = items.filter(i => i.kind === 'out').reduce((s, i) => s + i.amount, 0);
+  const resultado = disponible + asegurados - oblig;
+  const noAseg = allOutLines().filter(l => !l.collected && !EFFECT_METHODS.includes(l.method) && l.dueDate && !dayjs(l.dueDate).isAfter(dayjs(months[months.length - 1] + '-01').endOf('month'), 'day')).reduce((s, l) => s + Number(l.amount || 0), 0);
+  const cats = ['proveedor', 'gasto', 'prestamo', 'nomina', 'impuesto', 'iva', 'puntual'].filter(c => items.some(i => i.cat === c));
+  let run = disponible;
+  const net = {}, acc = {};
+  cols.forEach(k => { net[k] = sumBy(i => i.kind === 'in', k) - sumBy(i => i.kind === 'out', k); run += net[k]; acc[k] = run; });
+  const colLabel = k => k === 'venc' ? 'Vencido' : monthLabel(k);
+  const cell = (v, cls) => `<td class="${v ? cls : ''}">${v ? fmtMoney(v) : '—'}</td>`;
+  const bankLabel = id => bankOptions().find(o => o.value === id)?.label || '';
+  const perBank = banks.map(x => ({ b: x.b, saldo: x.r ? x.r.total : null, oblig: items.filter(i => i.kind === 'out' && i.bank === x.b.id).reduce((s, i) => s + i.amount, 0) }));
+  const sinBanco = items.filter(i => i.kind === 'out' && !banks.some(x => x.b.id === i.bank)).reduce((s, i) => s + i.amount, 0);
   document.getElementById('main').innerHTML = `
-    <div class="topbar"><div><h1>Provisión de tesorería</h1><div class="subtitle">Próximos 12 meses, por vencimiento previsto</div></div>
-      <button class="btn" id="addExpense">+ Gasto fijo / préstamo / impuesto / nómina</button></div>
-    <div class="section-toggle">
-      <button data-view="mensual" class="${provisionView==='mensual'?'active':''}">Vista mensual</button>
-      <button data-view="tabla" class="${provisionView==='tabla'?'active':''}">Tabla completa (12 meses)</button>
+    <div class="topbar"><div><h1>Provisión de tesorería</h1><div class="subtitle">Lo que tienes, lo que te entrará con seguridad razonable y lo que debes en ese plazo</div></div>
+      <div><button class="btn" id="addOneOff2">+ Gasto puntual</button> <button class="btn" id="addExpense">+ Gasto fijo / préstamo / impuesto / nómina</button></div></div>
+    <div class="section-toggle">${[1, 2, 3, 6, 12].map(n => `<button data-h="${n}" class="${provisionHorizon === n ? 'active' : ''}">${n === 1 ? '1 mes' : n + ' meses'}</button>`).join('')}</div>
+    <div class="kpi-row">
+      <div class="kpi"><div class="label">Disponible hoy (estimado)</div><div class="value">${fmtMoney(disponible)}</div><div class="muted">${sinSaldo ? sinSaldo + ' cuenta(s) sin saldo anotado: ' : ''}<a href="#" id="goBanks">ver Bancos</a></div></div>
+      <div class="kpi"><div class="label">Cobros asegurados</div><div class="value income">+${fmtMoney(asegurados)}</div><div class="muted">Pagarés, confirming y cheques</div></div>
+      <div class="kpi"><div class="label">Obligaciones</div><div class="value" style="color:var(--expense)">−${fmtMoney(oblig)}</div><div class="muted">Proveedores, fijos, puntuales e IVA</div></div>
+      <div class="kpi"><div class="label">Saldo previsto al final</div><div class="value" style="color:var(${resultado >= 0 ? '--income' : '--expense'})">${fmtMoney(resultado)}</div><div class="muted">${resultado >= 0 ? 'Cubres lo que debes y te quedan ' + fmtMoney(resultado) : 'Te faltan ' + fmtMoney(-resultado) + ' para cubrirlo'}</div></div>
     </div>
-    ${bodyHtml}
-    ${provisionView==='mensual'?fixedMonthCard(provisionMonth):''}
+    ${noAseg > 0 ? `<div class="muted" style="margin:6px 2px 12px">No contado: ${fmtMoney(noAseg)} de cobros pendientes por transferencia u otros medios sin asegurar con vencimiento en este plazo.</div>` : ''}
+    <div class="card"><div class="table-wrap"><table class="prov-table">
+      <thead><tr><th>Concepto</th>${cols.map(k => `<th>${colLabel(k)}</th>`).join('')}<th>Total</th></tr></thead>
+      <tbody>
+        <tr><td>Cobros asegurados</td>${cols.map(k => cell(sumBy(i => i.cat === 'cobro', k), 'pos')).join('')}<td class="pos">${fmtMoney(asegurados)}</td></tr>
+        ${cats.map(c => `<tr><td>${PROV_CATS[c]}</td>${cols.map(k => cell(sumBy(i => i.cat === c, k), 'neg')).join('')}<td class="neg">${fmtMoney(items.filter(i => i.cat === c).reduce((s, i) => s + i.amount, 0))}</td></tr>`).join('')}
+        <tr class="total"><td>Total obligaciones</td>${cols.map(k => cell(sumBy(i => i.kind === 'out', k), 'neg')).join('')}<td class="neg">${fmtMoney(oblig)}</td></tr>
+        <tr class="net"><td>Saldo del periodo</td>${cols.map(k => `<td class="${net[k] >= 0 ? 'pos' : 'neg'}">${fmtMoney(net[k])}</td>`).join('')}<td class="${asegurados - oblig >= 0 ? 'pos' : 'neg'}">${fmtMoney(asegurados - oblig)}</td></tr>
+        <tr class="net"><td>Saldo acumulado (desde ${fmtMoney(disponible)})</td>${cols.map(k => `<td class="${acc[k] >= 0 ? 'pos' : 'neg'}">${fmtMoney(acc[k])}</td>`).join('')}<td></td></tr>
+      </tbody></table></div></div>
+    <div class="card"><h2>Por banco</h2><div class="table-wrap"><table>
+      <thead><tr><th>Cuenta</th><th>Saldo estimado</th><th>Obligaciones asignadas a esta cuenta</th><th>Saldo tras pagarlas</th></tr></thead><tbody>
+        ${perBank.map(p => `<tr><td>${escapeHtml(p.b.name)}</td><td class="num">${p.saldo === null ? '<span class="muted">Sin saldo anotado</span>' : fmtMoney(p.saldo)}</td><td class="num neg">${p.oblig ? '−' + fmtMoney(p.oblig) : '—'}</td><td class="num ${p.saldo !== null && p.saldo - p.oblig < 0 ? 'neg' : ''}">${p.saldo === null ? '—' : fmtMoney(p.saldo - p.oblig)}${p.saldo !== null && p.saldo - p.oblig < 0 ? ' ⚠' : ''}</td></tr>`).join('')}
+        <tr><td>Sin banco indicado</td><td></td><td class="num neg">${sinBanco ? '−' + fmtMoney(sinBanco) : '—'}</td><td></td></tr>
+      </tbody></table></div><div class="muted" style="margin-top:6px">⚠ = la cuenta no llega para lo que tiene asignado: habría que mover dinero entre cuentas o esperar cobros.</div></div>
+    <div class="card"><h2>Detalle de movimientos previstos</h2><div class="table-wrap"><table>
+      <thead><tr><th>Fecha</th><th>Concepto</th><th>Tipo</th><th>Banco</th><th>Importe</th></tr></thead><tbody>
+        ${items.length === 0 ? '<tr><td colspan="5" class="empty">No hay movimientos previstos en este plazo.</td></tr>' : ''}
+        ${items.map(i => `<tr><td class="mono">${fmtDate(i.date)}${i.overdue ? ' <span class="pill pill-expense">Vencido</span>' : ''}</td><td>${escapeHtml(i.label)}</td><td class="muted">${PROV_CATS[i.cat]}</td><td class="muted">${escapeHtml(bankLabel(i.bank) || '—')}</td><td class="num ${i.kind === 'in' ? 'pos' : 'neg'}">${i.kind === 'in' ? '+' : '−'}${fmtMoney(i.amount)}</td></tr>`).join('')}
+      </tbody></table></div></div>
+    <div class="card"><div class="month-nav"><span class="muted">Pagos de gastos fijos del mes:</span>
+      <select id="monthSelect">${nextMonths(12).map(mm => `<option value="${mm}" ${mm === provisionMonth ? 'selected' : ''}>${monthLabel(mm)}</option>`).join('')}</select></div></div>
+    ${fixedMonthCard(provisionMonth)}
     <div class="card">
       <h2>Gastos fijos, préstamos, impuestos y nóminas configurados</h2>
       <div class="table-wrap"><table>
@@ -1551,16 +1693,13 @@ function renderProvision() {
     </div>
   `;
   document.getElementById('addExpense').onclick = () => openEntityModal('fixedExpense');
-  document.querySelectorAll('[data-payexp]').forEach(b => b.onclick = () => openEntityModal('expensePayment', null, { expenseId: b.dataset.payexp, month: b.dataset.m, amount: Number(b.dataset.pend), date: todayISO() }));
+  document.getElementById('addOneOff2').onclick = () => openEntityModal('oneOffExpense');
+  document.getElementById('goBanks').onclick = (e) => { e.preventDefault(); currentSection = 'banks'; currentDetail = {}; render(); };
+  document.querySelectorAll('[data-h]').forEach(b => b.onclick = () => { provisionHorizon = Number(b.dataset.h); render(); });
+  document.getElementById('monthSelect').onchange = (e) => { provisionMonth = e.target.value; render(); };
+  document.querySelectorAll('[data-payexp]').forEach(b => b.onclick = () => openEntityModal('expensePayment', null, { expenseId: b.dataset.payexp, month: b.dataset.m, amount: Number(b.dataset.pend), date: todayISO(), bank: byId(state.fixedExpenses, b.dataset.payexp)?.bank || '' }));
   document.querySelectorAll('[data-pid]').forEach(tr => tr.onclick = () => openEntityModal('expensePayment', tr.dataset.pid));
   document.querySelectorAll('#main tbody tr[data-id]').forEach(tr => tr.onclick = () => openEntityModal('fixedExpense', tr.dataset.id));
-  document.querySelectorAll('.section-toggle button').forEach(b => b.onclick = () => { provisionView = b.dataset.view; render(); });
-  if (provisionView === 'mensual') {
-    const idx = () => months.indexOf(provisionMonth);
-    document.getElementById('monthSelect').onchange = (e) => { provisionMonth = e.target.value; render(); };
-    document.getElementById('prevMonth').onclick = () => { const i = idx(); if (i>0) { provisionMonth = months[i-1]; render(); } };
-    document.getElementById('nextMonth').onclick = () => { const i = idx(); if (i<months.length-1) { provisionMonth = months[i+1]; render(); } };
-  }
 }
 
 // ---------- EFFECTS ----------
@@ -1764,12 +1903,15 @@ const ENTITY_CONFIG = {
       { key:'workId', label:'Obra (opcional)', type:'select', options: (data) => [{value:'',label:'— Sin obra asignada —'}, ...state.works.filter(w=>!data.clientId||w.clientId===data.clientId).map(w=>({value:w.id,label:w.name}))] },
       { key:'number', label:'Nº de factura', type:'text' },
       { key:'date', label:'Fecha de factura', type:'date' },
-      { key:'amount', label:'Importe (€)', type:'number', required:true },
+      { key:'amount', label:'Importe con IVA (€)', type:'number', required:true },
+      { key:'ivaExempt', label:'Sin IVA (p. ej. inversión del sujeto pasivo)', type:'checkbox' },
       { key:'dueDate', label:'Fecha de vencimiento', type:'date' },
       { key:'paymentMethod', label:'Forma de pago', type:'select', options: (data) => { const client = byId(state.clients, data.clientId); const methods = [...PAYMENT_METHODS]; if (client?.paymentMethod) methods.sort((a,b)=> a===client.paymentMethod?-1:(b===client.paymentMethod?1:0)); return methods; } },
       { key:'issuingBank', label:'Banco emisor (banco del cliente en el efecto)', type:'text', showIf: d => EFFECT_METHODS.includes(d.paymentMethod) },
+      { key:'emissionDate', label:'Fecha de emisión del efecto (opcional)', type:'date', showIf: d => EFFECT_METHODS.includes(d.paymentMethod) },
       { key:'collected', label:'Ya cobrada', type:'checkbox' },
       { key:'collectedDate', label:'Fecha de cobro', type:'date', showIf: d => d.collected },
+      { key:'collectedBank', label:'Cobrada en (banco)', type:'select', options: () => bankOptions(), showIf: d => d.collected },
       { key:'remesado', label:'Efecto ya remesado', type:'checkbox', showIf: d => EFFECT_METHODS.includes(d.paymentMethod) },
       { key:'remittanceBank', label:'Banco donde se remesará (el tuyo)', type:'text', showIf: d => EFFECT_METHODS.includes(d.paymentMethod) },
     ],
@@ -1792,12 +1934,15 @@ const ENTITY_CONFIG = {
       { key:'workId', label:'Obra (opcional, para imputar coste)', type:'select', options: () => [{value:'',label:'— Sin obra asignada —'}, ...state.works.map(w=>({value:w.id,label:w.name}))] },
       { key:'number', label:'Nº de factura', type:'text' },
       { key:'date', label:'Fecha de factura', type:'date' },
-      { key:'amount', label:'Importe (€)', type:'number', required:true },
+      { key:'amount', label:'Importe con IVA (€)', type:'number', required:true },
+      { key:'ivaExempt', label:'Sin IVA (p. ej. inversión del sujeto pasivo)', type:'checkbox' },
       { key:'dueDate', label:'Fecha de vencimiento', type:'date' },
       { key:'paymentMethod', label:'Forma de pago / tipo de efecto', type:'select', options: (data) => { const supplier = byId(state.suppliers, data.supplierId); const methods = [...PAYMENT_METHODS]; if (supplier?.paymentMethod) methods.sort((a,b)=> a===supplier.paymentMethod?-1:(b===supplier.paymentMethod?1:0)); return methods; } },
       { key:'note', label:'Observaciones (banco, etc.)', type:'text', showIf: d => EFFECT_METHODS.includes(d.paymentMethod) },
+      { key:'emissionDate', label:'Fecha de emisión del efecto (opcional)', type:'date', showIf: d => EFFECT_METHODS.includes(d.paymentMethod) },
       { key:'paid', label:'Ya pagada', type:'checkbox' },
       { key:'paidDate', label:'Fecha de pago', type:'date', showIf: d => d.paid },
+      { key:'paidBank', label:'Pagada por (banco)', type:'select', options: () => bankOptions(), showIf: d => d.paid },
     ],
     hooks: {
       supplierId: (draft, isNew) => {
@@ -1809,11 +1954,41 @@ const ENTITY_CONFIG = {
       dueDate: (draft) => { draft._dueDateAuto = false; },
     }
   },
+  bankAccount: {
+    title: 'Banco', col: 'bankAccounts',
+    fields: [
+      { key:'name', label:'Nombre del banco (ej. Unicaja, Santander)', type:'text', required:true },
+      { key:'archived', label:'Ya no lo usamos (ocultar de las listas)', type:'checkbox' },
+    ]
+  },
+  bankBalance: {
+    title: 'Saldo de banco o efectivo', col: 'bankBalances',
+    fields: [
+      { key:'bankId', label:'Cuenta', type:'select', options: () => bankOptions(false), required:true },
+      { key:'date', label:'Fecha del saldo', type:'date', required:true },
+      { key:'amount', label:'Saldo (€)', type:'number', required:true },
+      { key:'note', label:'Nota (opcional)', type:'text' },
+    ]
+  },
+  oneOffExpense: {
+    title: 'Gasto puntual', col: 'oneOffExpenses',
+    fields: [
+      { key:'concept', label:'Concepto', type:'text', required:true },
+      { key:'amount', label:'Importe (€)', type:'number', required:true },
+      { key:'dueDate', label:'Fecha de vencimiento', type:'date', required:true },
+      { key:'bank', label:'Se pagará por', type:'select', options: () => bankOptions() },
+      { key:'paid', label:'Ya pagado', type:'checkbox' },
+      { key:'paidDate', label:'Fecha de pago', type:'date', showIf: d => d.paid },
+      { key:'paidBank', label:'Pagado por (banco)', type:'select', options: () => bankOptions(), showIf: d => d.paid },
+      { key:'notes', label:'Notas', type:'textarea' },
+    ]
+  },
   expensePayment: {
     title: 'Pago de gasto fijo', col: 'fixedExpensePayments',
     fields: [
       { key:'amount', label:'Importe pagado (€)', type:'number', required:true },
       { key:'date', label:'Fecha de pago', type:'date' },
+      { key:'bank', label:'Pagado por (banco)', type:'select', options: () => bankOptions() },
       { key:'notes', label:'Notas', type:'textarea' },
     ]
   },
@@ -1822,8 +1997,9 @@ const ENTITY_CONFIG = {
     fields: [
       { key:'concept', label:'Concepto', type:'text', required:true },
       { key:'category', label:'Categoría', type:'select', options: EXPENSE_CATEGORIES.map(c=>({value:c.id,label:c.label})) },
-      { key:'autoIvaCalc', label:'Calcular automáticamente como 21% de (facturado − recibido) del trimestre', type:'checkbox', showIf: d => d.category === 'impuesto' },
+      { key:'autoIvaCalc', label:'Calcular automáticamente: IVA estimado (21% incluido en los importes) del trimestre', type:'checkbox', showIf: d => d.category === 'impuesto' },
       { key:'amount', label:'Importe (€)', type:'number', required:true, showIf: d => !(d.category === 'impuesto' && d.autoIvaCalc) },
+      { key:'bank', label:'Banco de pago habitual', type:'select', options: () => bankOptions() },
       { key:'frequency', label:'Periodicidad', type:'select', options: FREQUENCIES.map(f=>({value:f.id,label:f.label})) },
       { key:'nextDate', label:'Próximo vencimiento', type:'date' },
       { key:'installmentsRemaining', label:'Cuotas restantes (solo préstamos)', type:'number', showIf: d => d.category === 'prestamo' },
@@ -1850,6 +2026,8 @@ function recomputeDueDateSupplier(draft, supplier) {
 let modalDraft = {};
 let modalIsNew = true;
 
+const CASH = 'cash';
+const bankOptions = (withBlank = true) => [...(withBlank ? [{ value: '', label: '— Sin indicar —' }] : []), { value: CASH, label: 'Efectivo' }, ...state.bankAccounts.filter(b => !b.archived).map(b => ({ value: b.id, label: b.name }))];
 function openEntityModal(type, id = null, presetData = {}) {
   const cfg = ENTITY_CONFIG[type];
   const existing = id ? byId(state[cfg.col], id) : null;
