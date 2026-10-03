@@ -209,7 +209,7 @@
 <body>
 <div class="app">
   <nav class="sidebar" id="sidebar">
-    <div class="brand">Panel de Tesorería<small>Cobros · Pagos · Obras</small></div>
+    <div class="brand"><img src="logo.png" alt="" style="display:block;max-width:100%;max-height:56px;margin:0 0 8px;object-fit:contain" onerror="this.remove()">Panel de Tesorería<small>Cobros · Pagos · Obras</small></div>
     <div class="nav" id="navList"></div>
     <div class="sidebar-foot">Datos compartidos y en vivo entre todos los que abran este panel.</div>
   </nav>
@@ -337,8 +337,9 @@
   function badge(demo) {
     var b = document.createElement('div');
     b.style.cssText = demo ? 'position:fixed;left:0;right:0;top:0;text-align:center;background:#b3261e;color:#fff;font:13px Arial;padding:6px;z-index:9999' : 'position:fixed;right:8px;bottom:6px;font:11px Arial;color:#888;z-index:9999';
-    b.innerHTML = (demo ? 'MODO DE PRUEBA: los datos NO se guardan en la nube, solo en este navegador · ' : 'Conectado a la nube · ') + '<a href="#" style="color:' + (demo ? '#fff' : '#888') + '">Salir</a>';
-    b.querySelector('a').onclick = function (e) { e.preventDefault(); setCfg(null); location.reload(); };
+    b.innerHTML = (demo ? 'MODO DE PRUEBA: los datos NO se guardan en la nube, solo en este navegador · ' : 'Conectado a la nube · ') + '<a href="#" data-x="emp" style="color:' + (demo ? '#fff' : '#888') + '">Datos de la empresa</a> · <a href="#" data-x="out" style="color:' + (demo ? '#fff' : '#888') + '">Salir</a>';
+    b.querySelector('[data-x=out]').onclick = function (e) { e.preventDefault(); setCfg(null); location.reload(); };
+    b.querySelector('[data-x=emp]').onclick = function (e) { e.preventDefault(); if (window.__editEmpresa) window.__editEmpresa(); };
     document.body.appendChild(b);
   }
 
@@ -555,30 +556,86 @@ function fixedMonthCard(m) {
     ${pays.length ? `<div class="muted" style="margin-top:10px">Pagos registrados (pulsa uno para editarlo o borrarlo):</div><div class="table-wrap"><table><tbody>${pays.map(p => `<tr data-pid="${p.id}"><td>${escapeHtml(byId(state.fixedExpenses, p.expenseId)?.concept || '—')}</td><td class="mono">${fmtDate(p.date)}</td><td class="num">${fmtMoney(p.amount)}</td></tr>`).join('')}</tbody></table></div>` : ''}
   </div>`;
 }
+/* ===== Sobres y cartas ===== */
+/* Medidas del sobre en mm (sobre americano nº 10). left = distancia desde el borde izquierdo (más = más a la derecha); top = desde arriba (más = más abajo). */
+const ENV = { w: 241, h: 105, left: 105, top: 40 };
+function printDoc(html) {
+  const f = document.createElement('iframe');
+  f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+  f.srcdoc = html;
+  f.onload = () => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) { showToast('No se pudo abrir la impresión.'); } setTimeout(() => f.remove(), 60000); };
+  document.body.appendChild(f);
+}
+function envDoc(inner, auto) {
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Sobre</title><style>
+    @page { size: ${ENV.w}mm ${ENV.h}mm; margin: 0; }
+    html, body { width: ${ENV.w}mm; height: ${ENV.h}mm; }
+    body { font-family: Arial, sans-serif; color: #000; margin: 0; padding: ${ENV.top}mm 8mm 0 ${ENV.left}mm; box-sizing: border-box; }
+    .l { font-size: 7.5pt; text-transform: uppercase; letter-spacing: .08em; margin-top: 3mm; color: #444; }
+    .v { font-size: 13pt; font-weight: 700; line-height: 1.2; }
+    .a { font-size: 13pt; line-height: 1.25; }
+  </style></head><body>${inner}${auto ? '<script>onload=function(){setTimeout(function(){print()},300)}<\/script>' : ''}</body></html>`;
+}
 function envelopeHtml(w, auto) {
   const c = byId(state.clients, w.clientId);
   const row = (l, v) => `<div class="l">${l}</div><div class="v">${escapeHtml(v || '—')}</div>`;
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Sobre de obra</title><style>
-    @page { size: 220mm 110mm; margin: 0; }
-    html, body { width: 220mm; height: 110mm; }
-    body { font-family: Arial, sans-serif; color: #000; margin: 0; padding: 16mm 12mm 0 78mm; box-sizing: border-box; }
-    .l { font-size: 8pt; text-transform: uppercase; letter-spacing: .08em; margin-top: 4mm; color: #444; }
-    .v { font-size: 14pt; font-weight: 700; line-height: 1.2; }
-  </style></head><body>${row('Cliente', c?.name)}${row('Obra', w.name)}${row('Dirección de entrega', w.address)}${row('Recepciona', [w.foremanName, w.foremanPhone].filter(Boolean).join(' · '))}${auto ? '<script>onload=function(){setTimeout(function(){print()},300)}<\/script>' : ''}</body></html>`;
+  return envDoc(row('Cliente', c?.name) + row('Obra', w.name) + row('Dirección de entrega', w.address) + row('Recepciona', [w.foremanName, w.foremanPhone].filter(Boolean).join(' · ')), auto);
 }
-function printEnvelope(w) {
-  const f = document.createElement('iframe');
-  f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
-  f.srcdoc = envelopeHtml(w, false);
-  f.onload = () => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) { showToast('No se pudo abrir la impresión. Usa «Descargar sobre».'); } setTimeout(() => f.remove(), 60000); };
-  document.body.appendChild(f);
+function supplierEnvelopeHtml(s) {
+  const lines = String(s.address || '').split(/\r?\n/).filter(Boolean).map(escapeHtml).join('<br>');
+  return envDoc(`<div class="v">${escapeHtml(s.name || '')}</div>${s.contactName ? `<div class="a">A la att. de ${escapeHtml(s.contactName)}</div>` : ''}<div class="a" style="margin-top:2mm">${lines || '(sin dirección postal)'}</div>`);
 }
+function printEnvelope(w) { printDoc(envelopeHtml(w, false)); }
 function downloadEnvelope(w) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([envelopeHtml(w, true)], { type: 'text/html' }));
   a.download = 'sobre-' + (w.name || 'obra').replace(/[^a-z0-9]+/gi, '-').toLowerCase() + '.html';
   document.body.appendChild(a); a.click(); a.remove();
   showToast('Sobre descargado: ábrelo y se abrirá la impresión');
+}
+/* Datos de la empresa para las cartas (se piden una vez y se guardan en este navegador; se pueden cambiar desde «Datos de la empresa», abajo a la derecha) */
+function getEmpresa(force) {
+  let e = null; try { e = JSON.parse(localStorage.getItem('panelTesoreriaEmpresa') || 'null'); } catch (x) {}
+  if (!e || force) {
+    const n = prompt('Nombre de la empresa (saldrá en las cartas):', e?.nombre || ''); if (!n) return null;
+    const c = prompt('Ciudad (para la fecha de la carta):', e?.ciudad || '') || '';
+    const f = prompt('Nombre y cargo de quien firma (opcional):', e?.firmante || '') || '';
+    e = { nombre: n.trim(), ciudad: c.trim(), firmante: f.trim() };
+    try { localStorage.setItem('panelTesoreriaEmpresa', JSON.stringify(e)); } catch (x) {}
+  }
+  return e;
+}
+window.__editEmpresa = () => getEmpresa(true);
+function pagareLetterHtml(line) {
+  const e = getEmpresa(); if (!e) return null;
+  const sup = byId(state.suppliers, line.supplierId) || {};
+  const inv = byId(state.invoicesIn, line.invoiceId) || {};
+  const long = d => dayjs(d).format('D [de] MMMM [de] YYYY');
+  const addr = String(sup.address || '').split(/\r?\n/).filter(Boolean).map(escapeHtml).join('<br>');
+  const num = line.invoiceNumber || inv.number;
+  const fraCorta = num ? `su factura n.º ${escapeHtml(num)}` : 'su factura';
+  const fra = fraCorta + (num && inv.date ? ' de fecha ' + long(inv.date) : '');
+  const venc = line.dueDate ? `, con vencimiento el ${long(line.dueDate)}` : '';
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Carta de envío de pagaré</title><style>
+    @page { size: A4; margin: 25mm 24mm 20mm 24mm; }
+    body { font-family: Georgia, 'Times New Roman', serif; font-size: 11.5pt; line-height: 1.55; color: #111; margin: 0; }
+    .emp { font-family: Arial, sans-serif; font-size: 13pt; font-weight: 700; letter-spacing: .03em; border-bottom: 1px solid #999; padding-bottom: 4mm; margin-bottom: 14mm; }
+    .fecha { text-align: right; margin-bottom: 12mm; }
+    .dest { margin-bottom: 12mm; }
+    .asunto { font-weight: 700; margin-bottom: 8mm; }
+    p { margin: 0 0 5mm; }
+    .firma { margin-top: 16mm; }
+  </style></head><body>
+    <div class="emp"><img src="${new URL('logo.png', location.href).href}" alt="" style="display:block;max-height:16mm;max-width:60mm;margin-bottom:3mm" onerror="this.remove()">${escapeHtml(e.nombre)}</div>
+    <div class="fecha">${escapeHtml(e.ciudad ? e.ciudad + ', ' : '')}${long(new Date())}</div>
+    <div class="dest"><strong>${escapeHtml(sup.name || '')}</strong>${sup.contactName ? '<br>A la atención de ' + escapeHtml(sup.contactName) : ''}${addr ? '<br>' + addr : ''}</div>
+    <div class="asunto">Asunto: Pagaré correspondiente a ${fraCorta}</div>
+    <p>Estimados señores:</p>
+    <p>Les adjuntamos un pagaré emitido por ${escapeHtml(e.nombre)} por importe de <strong>${fmtMoney(line.amount)}</strong>${venc}, correspondiente a ${fra}.</p>
+    <p>Les agradeceríamos que nos confirmaran su recepción. Quedamos a su disposición para cualquier duda o aclaración que necesiten.</p>
+    <p>Un cordial saludo,</p>
+    <div class="firma">${e.firmante ? escapeHtml(e.firmante) + '<br>' : ''}${escapeHtml(e.nombre)}</div>
+  </body></html>`;
 }
 function computeAutoIva(mKey) {
   const end = dayjs(mKey + '-01').endOf('month');
@@ -1512,7 +1569,7 @@ function groupByMonth(list, dateField) {
   list.forEach(i => { const k = monthKey(i[dateField]); (groups[k] = groups[k] || []).push(i); });
   return Object.keys(groups).sort().map(k => ({ month: k, items: groups[k].sort((a,b)=>(a[dateField]||'').localeCompare(b[dateField]||'')) }));
 }
-function renderGroupedSection(list, dateField, nameResolver, totalLabel) {
+function renderGroupedSection(list, dateField, nameResolver, totalLabel, actionsFn, entity) {
   if (list.length === 0) return '<div class="empty">Nada pendiente.</div>';
   const weekTotal = list.filter(i => daysUntil(i[dateField]) <= 7).reduce((s,i)=>s+Number(i.amount||0),0);
   const grand = list.reduce((s,i)=>s+Number(i.amount||0),0);
@@ -1524,7 +1581,7 @@ function renderGroupedSection(list, dateField, nameResolver, totalLabel) {
       return `<div class="month-group">
         <div class="month-group-head"><span>${monthLabel(g.month)}</span><span class="mono">${fmtMoney(subtotal)}</span></div>
         <div class="table-wrap"><table>
-          <tbody>${g.items.map(i=>`<tr data-eid="${i.invoiceId||i.id}"><td>${escapeHtml(nameResolver(i))}</td><td class="mono">${escapeHtml(i.invoiceNumber||i.number||'—')}</td><td class="mono">${fmtDate(i[dateField])}</td><td class="num">${fmtMoney(i.amount)}</td></tr>`).join('')}</tbody>
+          <tbody>${g.items.map(i=>`<tr data-eid="${i.invoiceId||i.id}" data-ent="${entity||'invoiceOut'}"><td>${escapeHtml(nameResolver(i))}</td><td class="mono">${escapeHtml(i.invoiceNumber||i.number||'—')}</td><td class="mono">${fmtDate(i[dateField])}</td><td class="num">${fmtMoney(i.amount)}</td>${actionsFn?`<td class="num">${actionsFn(i)}</td>`:''}</tr>`).join('')}</tbody>
         </table></div>
       </div>`;
     }).join('')}
@@ -1568,7 +1625,7 @@ function renderEffects() {
       </table></div>`}
     </div>
     <div class="card"><h2>En cartera — pendiente de cobrar</h2>${renderGroupedSection(inPortfolio, 'dueDate', l=>byId(state.clients,l.clientId)?.name||'—', 'Total pendiente de cobrar')}</div>
-    <div class="card"><h2>Pendiente de pagar a proveedores</h2>${renderGroupedSection(pendingPayFiltered, 'dueDate', l=>byId(state.suppliers,l.supplierId)?.name||'—', 'Total pendiente de pagar')}</div>
+    <div class="card"><h2>Pendiente de pagar a proveedores</h2>${renderGroupedSection(pendingPayFiltered, 'dueDate', l=>byId(state.suppliers,l.supplierId)?.name||'—', 'Total pendiente de pagar', l=>l.method==='Pagaré'?`<button class="btn btn-sm" data-pag="env" data-k="${l.invoiceId}|${l.id||''}">Sobre</button> <button class="btn btn-sm" data-pag="carta" data-k="${l.invoiceId}|${l.id||''}">Carta</button>`:'', 'invoiceIn')}</div>
     `;
   } else if (effectsTab === 'remesados') {
     body = `<div class="card"><h2>Remesados — pendientes de confirmación de cobro</h2>${renderEffectTable(remesados, true)}</div>`;
@@ -1586,6 +1643,15 @@ function renderEffects() {
     ${body}
   `;
   document.querySelectorAll('.section-toggle button').forEach(b => b.onclick = () => { effectsTab = b.dataset.tab; effectsSelected = new Set(); render(); });
+  const pagLines = {}; pendingPayFiltered.forEach(l => { pagLines[(l.invoiceId || '') + '|' + (l.id || '')] = l; });
+  document.querySelectorAll('[data-pag]').forEach(b => b.onclick = ev => {
+    ev.stopPropagation(); const l = pagLines[b.dataset.k]; if (!l) return;
+    if (b.dataset.pag === 'env') {
+      const sp = byId(state.suppliers, l.supplierId); if (!sp) return showToast('Proveedor no encontrado');
+      if (!sp.address) showToast('Este proveedor no tiene dirección postal: añádela en su ficha.');
+      printDoc(supplierEnvelopeHtml(sp));
+    } else { const h = pagareLetterHtml(l); if (h) printDoc(h); }
+  });
 
   if (effectsTab === 'pendientes') {
     const bulkBtn = document.getElementById('bulkRemit');
@@ -1608,9 +1674,9 @@ function renderEffects() {
         showToast(`${keys.length} efecto(s) marcados como remesados`);
       };
     }
-    document.querySelectorAll('[data-eid]').forEach(tr => tr.onclick = () => openEntityModal('invoiceOut', tr.dataset.eid));
+    document.querySelectorAll('[data-eid]').forEach(tr => tr.onclick = () => openEntityModal(tr.dataset.ent || 'invoiceOut', tr.dataset.eid));
   } else {
-    document.querySelectorAll('[data-eid]').forEach(tr => tr.onclick = () => openEntityModal('invoiceOut', tr.dataset.eid));
+    document.querySelectorAll('[data-eid]').forEach(tr => tr.onclick = () => openEntityModal(tr.dataset.ent || 'invoiceOut', tr.dataset.eid));
   }
 }
 function renderEffectTable(list, showRemesaDate) {
@@ -1655,6 +1721,7 @@ const ENTITY_CONFIG = {
       { key:'contactName', label:'Persona de contacto', type:'text' },
       { key:'phone', label:'Teléfono', type:'text' },
       { key:'email', label:'Email', type:'text' },
+      { key:'address', label:'Dirección postal (para sobres y cartas): calle, CP y población', type:'textarea' },
       { key:'paymentMethod', label:'Forma de pago', type:'select', options: PAYMENT_METHODS },
       { key:'paymentTermDays', label:'Plazo de pago (días)', type:'number' },
       { key:'notes', label:'Notas', type:'textarea' },
