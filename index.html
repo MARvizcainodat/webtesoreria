@@ -232,12 +232,19 @@
 
   /* ---------- modo conectado: hoja de Google mediante Apps Script ---------- */
   function makeRemote(cfg) {
-    var cache = {}, subs = {}, last = {}, ready = false;
+    var cache = {}, subs = {}, last = {}, ready = false, queue = Promise.resolve(), recent = {};
     var snap = function (c) { var docs = (cache[c] || []).map(function (r) { return { id: r.id, data: function () { return r.data; } }; }); return { docs: docs, size: docs.length }; };
     var notify = function (c) { (subs[c] || []).forEach(function (cb) { cb(snap(c)); }); };
     async function call(action, extra) {
       var r = await fetch(cfg.url, { method: 'POST', body: JSON.stringify(Object.assign({ key: cfg.key, action: action }, extra || {})) });
       var j = await r.json(); if (j.error) throw new Error(j.error); return j;
+    }
+    /* reintenta solo si falla la red; add/update/delete son idempotentes en el servidor, así que no puede duplicar */
+    async function callRetry(action, extra) {
+      for (var i = 0; ; i++) {
+        try { return await call(action, extra); }
+        catch (e) { if (/Clave|no válid/i.test(e.message) || i >= 2) throw e; await new Promise(function (r) { setTimeout(r, 800 * (i + 1)); }); }
+      }
     }
     async function load() {
       var all = (await call('getAll')).data;
@@ -247,16 +254,42 @@
         if (changed && ready) notify(c);
       });
     }
+    var refresh = function () { load().catch(function () {}); };
+    /* las escrituras se hacen una a una y en orden */
+    var enqueue = function (fn) { var p = queue.then(fn); queue = p.catch(function () {}); return p; };
+    var find = function (c, id) { return (cache[c] || []).filter(function (r) { return r.id === id; })[0]; };
     var db = { collection: function (c) { return {
-      add: async function (d) { var id = 'id' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); await call('add', { c: c, id: id, json: JSON.stringify(d) }); await load(); return { id: id }; },
+      add: function (d) {
+        var json = JSON.stringify(d), k = c + '|' + json, now = Date.now();
+        if (recent[k] && now - recent[k].t < 4000) return Promise.resolve({ id: recent[k].id }); /* doble clic: no duplica */
+        var id = 'id' + now.toString(36) + Math.random().toString(36).slice(2, 7);
+        recent[k] = { id: id, t: now };
+        return enqueue(async function () {
+          try { await callRetry('add', { c: c, id: id, json: json }); }
+          catch (e) { delete recent[k]; throw e; }
+          (cache[c] = cache[c] || []).push({ id: id, data: JSON.parse(json) }); last[c] = JSON.stringify(cache[c]); notify(c);
+          refresh(); return { id: id };
+        });
+      },
       get: async function () { return snap(c); },
       onSnapshot: function (cb) { (subs[c] = subs[c] || []).push(cb); setTimeout(function () { cb(snap(c)); }, 0); return function () {}; },
       doc: function (id) { return {
-        update: async function (p) { await call('update', { c: c, id: id, patch: JSON.stringify(p) }); await load(); },
-        delete: async function () { await call('delete', { c: c, id: id }); await load(); },
+        update: function (p) { return enqueue(async function () {
+          var cur = find(c, id), patch = {};
+          Object.keys(p).forEach(function (k) { if (k !== 'id' && (!cur || JSON.stringify(cur.data[k]) !== JSON.stringify(p[k]))) patch[k] = p[k]; }); /* solo los campos que cambian */
+          if (!Object.keys(patch).length) return;
+          await callRetry('update', { c: c, id: id, patch: JSON.stringify(patch) });
+          if (cur) { Object.assign(cur.data, patch); last[c] = JSON.stringify(cache[c]); notify(c); }
+          refresh();
+        }); },
+        delete: function () { return enqueue(async function () {
+          await callRetry('delete', { c: c, id: id });
+          cache[c] = (cache[c] || []).filter(function (r) { return r.id !== id; }); last[c] = JSON.stringify(cache[c]); notify(c);
+          refresh();
+        }); },
       }; },
     }; } };
-    return { load: load, start: function () { ready = true; setInterval(function () { if (document.visibilityState === 'visible') load().catch(function () {}); }, 30000); return db; } };
+    return { load: load, start: function () { ready = true; setInterval(function () { if (document.visibilityState === 'visible') refresh(); }, 30000); return db; } };
   }
 
   /* ---------- modo prueba: datos solo en este navegador ---------- */
@@ -302,8 +335,9 @@
     });
   }
   function badge(demo) {
-    var b = document.createElement('div'); b.style.cssText = 'position:fixed;right:8px;bottom:6px;font:11px Arial;color:#888;z-index:9999';
-    b.innerHTML = (demo ? 'Modo de prueba · ' : 'Conectado · ') + '<a href="#" style="color:#888">Salir</a>';
+    var b = document.createElement('div');
+    b.style.cssText = demo ? 'position:fixed;left:0;right:0;top:0;text-align:center;background:#b3261e;color:#fff;font:13px Arial;padding:6px;z-index:9999' : 'position:fixed;right:8px;bottom:6px;font:11px Arial;color:#888;z-index:9999';
+    b.innerHTML = (demo ? 'MODO DE PRUEBA: los datos NO se guardan en la nube, solo en este navegador · ' : 'Conectado a la nube · ') + '<a href="#" style="color:' + (demo ? '#fff' : '#888') + '">Salir</a>';
     b.querySelector('a').onclick = function (e) { e.preventDefault(); setCfg(null); location.reload(); };
     document.body.appendChild(b);
   }
