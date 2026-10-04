@@ -142,7 +142,7 @@
   .prov-table td.neg { color: var(--expense); }
   .prov-table td.pos { color: var(--income); }
   .prov-table { min-width: 860px; }
-  @media (max-width: 760px) {
+  @media (max-width: 760px), (hover: none) and (pointer: coarse) and (max-width: 1280px) {
     .prov-table th:first-child, .prov-table td:first-child { position: static; }
   }
 
@@ -162,7 +162,7 @@
   .month-nav select { font-family: var(--font-body); font-weight:700; font-size:14px; padding: 7px 10px; border-radius: var(--radius); border: 1px solid var(--border-strong); background: var(--bg); color: var(--ink); }
 
   .mobile-topbar { display: none; }
-  @media (max-width: 760px) {
+  @media (max-width: 760px), (hover: none) and (pointer: coarse) and (max-width: 1280px) {
     .app { flex-direction: column; }
     .sidebar { display:none; }
     .mobile-topbar { display:flex; align-items:center; justify-content:space-between; position: sticky; top:0; z-index: 20; background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 16px; padding-top: calc(12px + env(safe-area-inset-top, 0px)); }
@@ -191,7 +191,7 @@
   .sheet-card-amount { font-family: var(--font-mono); font-size: 15px; font-weight: 700; }
   .sheet-card-due { font-family: var(--font-mono); font-size: 11px; color: var(--ink-soft); white-space: nowrap; }
   .sheet-card-meta { font-size: 10.5px; color: var(--ink-faint); }
-  @media (max-width: 760px) {
+  @media (max-width: 760px), (hover: none) and (pointer: coarse) and (max-width: 1280px) {
     .sheet-table-wrap { display: none; }
     .sheet-cards { display: block; }
   }
@@ -224,7 +224,7 @@
   /* ---------- defensa de formatos: fechas, importes y casillas que lleguen como texto ---------- */
   var DATE_F = ['date','dueDate','paidDate','collectedDate','nextDate','remittanceDate','emissionDate','issueDate','lastDate'];
   var NUM_F = ['amount','budget','paymentTermDays','installmentsRemaining','quantity','unitPrice','price','base','iva','ivaAmount','ivaRate'];
-  var BOOL_F = ['collected','paid','remesado','autoIvaCalc','received','archived','ivaExempt','main'];
+  var BOOL_F = ['collected','paid','remesado','autoIvaCalc','received','archived','ivaExempt','main','negotiated'];
   var pad = function (n) { return (n < 10 ? '0' : '') + n; };
   var okDate = function (y, m, d) { var t = new Date(Date.UTC(y, m - 1, d)); return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d; };
   var iso = function (y, m, d) { return okDate(y, m, d) ? y + '-' + pad(m) + '-' + pad(d) : null; };
@@ -383,7 +383,7 @@
   function badge(demo) {
     var b = document.createElement('div');
     b.style.cssText = demo ? 'position:fixed;left:0;right:0;top:0;text-align:center;background:#b3261e;color:#fff;font:13px Arial;padding:6px;z-index:9999' : 'position:fixed;right:8px;bottom:6px;font:11px Arial;color:#888;z-index:9999';
-    b.innerHTML = (demo ? 'MODO DE PRUEBA: los datos NO se guardan en la nube, solo en este navegador · ' : 'Conectado a la nube · ') + '<a href="#" data-x="emp" style="color:' + (demo ? '#fff' : '#888') + '">Datos de la empresa</a> · <a href="#" data-x="out" style="color:' + (demo ? '#fff' : '#888') + '">Salir</a>';
+    b.innerHTML = (demo ? 'MODO DE PRUEBA: los datos NO se guardan en la nube, solo en este navegador · ' : 'Conectado a la nube · pantalla ' + window.innerWidth + ' px · ') + '<a href="#" data-x="emp" style="color:' + (demo ? '#fff' : '#888') + '">Datos de la empresa</a> · <a href="#" data-x="out" style="color:' + (demo ? '#fff' : '#888') + '">Salir</a>';
     b.querySelector('[data-x=out]').onclick = function (e) { e.preventDefault(); setCfg(null); location.reload(); };
     b.querySelector('[data-x=emp]').onclick = function (e) { e.preventDefault(); if (window.__editEmpresa) window.__editEmpresa(); };
     document.body.appendChild(b);
@@ -487,7 +487,7 @@ function showToast(msg) {
 
 function outLines(inv) {
   const custom = state.invoiceOutPayments.filter(p => p.invoiceId === inv.id);
-  if (!custom.length) return [{ id:null, invoiceId:inv.id, amount:Number(inv.amount||0), date:inv.date, dueDate:inv.dueDate, method:inv.paymentMethod, issuingBank:inv.issuingBank||'', remesado:!!inv.remesado, remittanceBank:inv.remittanceBank||'', remittanceDate:inv.remittanceDate||'', remittanceId:inv.remittanceId||'', remittanceBankId:inv.remittanceBankId||'', collected:!!inv.collected, collectedDate:inv.collectedDate||'', collectedBank:inv.collectedBank||'', emissionDate:inv.emissionDate||'', _implicit:true }];
+  if (!custom.length) return [{ id:null, invoiceId:inv.id, amount:Number(inv.amount||0), date:inv.date, dueDate:inv.dueDate, method:inv.paymentMethod, issuingBank:inv.issuingBank||'', remesado:!!inv.remesado, remittanceBank:inv.remittanceBank||'', remittanceDate:inv.remittanceDate||'', remittanceId:inv.remittanceId||'', remittanceBankId:inv.remittanceBankId||'', collected:!!inv.collected, collectedDate:inv.collectedDate||'', collectedBank:inv.collectedBank||'', negotiated:!!inv.negotiated, emissionDate:inv.emissionDate||'', _implicit:true }];
   return custom;
 }
 function inLines(inv) {
@@ -589,22 +589,33 @@ function expArrears(e, m) {
   while (k < m) { tot += Math.max(0, expenseMonthAmount(e, k) - expPaid(e.id, k)); k = dayjs(k + '-01').add(1, 'month').format('YYYY-MM'); }
   return tot;
 }
-function fixedMonthCard(m) {
-  let tP = 0, tG = 0, tD = 0;
-  const rows = state.fixedExpenses.map(e => {
-    const prev = expenseMonthAmount(e, m), atr = expArrears(e, m), pag = expPaid(e.id, m), pend = Math.max(0, prev + atr - pag);
-    if (!prev && !atr && !pag) return '';
+function fixedCards(m) {
+  const rows = []; let tP = 0, tG = 0, tD = 0;
+  state.fixedExpenses.forEach(e => {
+    const cuota = expenseMonthAmount(e, m), atr = expArrears(e, m), pag = expPaid(e.id, m);
+    if (!cuota && !atr && !pag) return;
+    const prev = cuota + atr, pend = Math.max(0, prev - pag);
+    const dim = dayjs(m + '-01').daysInMonth(), day = Math.min(dayjs(e.nextDate).isValid() ? dayjs(e.nextDate).date() : 1, dim);
+    const date = `${m}-${String(day).padStart(2, '0')}`;
     tP += prev; tG += pag; tD += pend;
     const st = pend <= 0.005 ? ['Pagado', 'pill-income'] : pag > 0 ? ['Parcial', 'pill-warn'] : ['Pendiente', 'pill-expense'];
-    return `<tr><td>${escapeHtml(e.concept)}</td><td class="num">${fmtMoney(prev)}</td><td class="num">${atr > 0.005 ? fmtMoney(atr) : '—'}</td><td class="num">${fmtMoney(pag)}</td><td class="num">${fmtMoney(pend)}</td><td><span class="pill ${st[1]}">${st[0]}</span></td><td>${pend > 0.005 ? `<button class="btn btn-sm" data-payexp="${e.id}" data-m="${m}" data-pend="${pend.toFixed(2)}">Pagar</button>` : ''}</td></tr>`;
-  }).join('');
-  const pays = state.fixedExpensePayments.filter(p => p.month === m).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-  return `<div class="card"><h2>Pagos de gastos fijos · ${monthLabel(m)}</h2>
-    <div class="muted" style="margin-bottom:8px">Previsto ${fmtMoney(tP)} · Pagado ${fmtMoney(tG)} · Pendiente (con atrasos) ${fmtMoney(tD)}</div>
-    <div class="table-wrap"><table><thead><tr><th>Concepto</th><th>Previsto</th><th>Atraso</th><th>Pagado</th><th>Pendiente</th><th>Estado</th><th></th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="7" class="empty">Sin gastos fijos este mes.</td></tr>'}</tbody></table></div>
-    ${pays.length ? `<div class="muted" style="margin-top:10px">Pagos registrados (pulsa uno para editarlo o borrarlo):</div><div class="table-wrap"><table><tbody>${pays.map(p => `<tr data-pid="${p.id}"><td>${escapeHtml(byId(state.fixedExpenses, p.expenseId)?.concept || '—')}</td><td class="mono">${fmtDate(p.date)}</td><td class="num">${fmtMoney(p.amount)}</td></tr>`).join('')}</tbody></table></div>` : ''}
-  </div>`;
+    rows.push({ date, html: `<tr><td class="mono">${fmtDate(date)}</td><td>${escapeHtml(e.concept)}</td><td class="num">${atr > 0.005 ? fmtMoney(atr) : '—'}</td><td class="num">${fmtMoney(prev)}</td><td class="num">${fmtMoney(pag)}</td><td class="num">${fmtMoney(pend)}</td><td><span class="pill ${st[1]}">${st[0]}</span></td><td>${pend > 0.005 ? `<button class="btn btn-sm" data-payexp="${e.id}" data-m="${m}" data-pend="${pend.toFixed(2)}">Pagar</button>` : ''}</td></tr>` });
+  });
+  rows.sort((a, b) => a.date < b.date ? -1 : 1);
+  const inM = d => d && String(d).slice(0, 7) === m, ev = [];
+  state.fixedExpensePayments.forEach(p => { const dt = p.date || (p.month ? p.month + '-01' : ''); if (inM(dt)) { const e = byId(state.fixedExpenses, p.expenseId); ev.push({ date: dt, concept: e?.concept || '—', tipo: 'Pago de gasto fijo', bank: defBank(p.bank || e?.bank), amount: Number(p.amount || 0), kind: 'out', pid: p.id }); } });
+  allInLines().filter(l => l.paid && inM(l.paidDate)).forEach(l => ev.push({ date: l.paidDate, concept: `${byId(state.suppliers, l.supplierId)?.name || '—'} · ${l.invoiceNumber || ''}`, tipo: 'Pago a proveedor', bank: lineBank(l, 'paidBank'), amount: Number(l.amount || 0), kind: 'out' }));
+  state.oneOffExpenses.filter(x => x.paid && inM(x.paidDate)).forEach(x => ev.push({ date: x.paidDate, concept: x.concept, tipo: 'Gasto puntual', bank: defBank(x.paidBank || x.bank), amount: Number(x.amount || 0), kind: 'out' }));
+  allOutLines().filter(l => l.collected && inM(l.collectedDate)).forEach(l => ev.push({ date: l.collectedDate, concept: `${byId(state.clients, l.clientId)?.name || '—'} · ${l.invoiceNumber || ''}`, tipo: l.negotiated ? 'Cobro anticipado (negociado)' : 'Cobro de cliente', bank: lineBank(l, 'collectedBank'), amount: Number(l.amount || 0), kind: 'in' }));
+  ev.sort((a, b) => a.date < b.date ? 1 : -1);
+  const G = 'color:#14663c;font-weight:600', RED = 'color:var(--expense)';
+  return `<div class="card"><h2>Gastos fijos · ${monthLabel(m)}</h2>
+    <div class="muted" style="margin-bottom:8px">Previsto (cuota del mes + atrasos) ${fmtMoney(tP)} · Pagado ${fmtMoney(tG)} · Pendiente ${fmtMoney(tD)}</div>
+    <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Concepto</th><th>Atraso</th><th>Previsto</th><th>Pagado</th><th>Pendiente</th><th>Estado</th><th></th></tr></thead>
+    <tbody>${rows.map(r => r.html).join('') || '<tr><td colspan="8" class="empty">Sin gastos fijos este mes.</td></tr>'}</tbody></table></div></div>
+  <div class="card"><h2>Pagos y cobros registrados · ${monthLabel(m)}</h2>
+    <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Concepto</th><th>Tipo</th><th>Banco</th><th>Importe</th></tr></thead>
+    <tbody>${ev.map(x => `<tr ${x.pid ? `data-pid="${x.pid}" style="cursor:pointer"` : ''}><td class="mono">${fmtDate(x.date)}</td><td>${escapeHtml(x.concept)}</td><td class="muted">${x.tipo}</td><td class="muted">${escapeHtml(bankNameOf(x.bank) || '—')}</td><td class="num" style="${x.kind === 'in' ? G : RED}">${x.kind === 'in' ? '+' : '−'}${fmtMoney(x.amount)}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No hay pagos ni cobros registrados este mes.</td></tr>'}</tbody></table></div></div>`;
 }
 /* ===== Sobres y cartas ===== */
 /* Medidas del sobre en mm (sobre americano nº 10). left = distancia desde el borde izquierdo (más = más a la derecha); top = desde arriba (más = más abajo). */
@@ -1342,7 +1353,9 @@ let banksOpen = new Set();
 const bankList = () => [{ id: CASH, name: 'Efectivo' }, ...state.bankAccounts.filter(b => !b.archived)];
 function lastBalance(bankId) {
   const rows = state.bankBalances.filter(b => b.bankId === bankId && b.date).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  return rows.length ? rows[rows.length - 1] : null;
+  if (rows.length) return rows[rows.length - 1];
+  const t = state.bankTransfers.filter(x => x.fromId && x.toId && x.date && (x.fromId === bankId || x.toId === bankId)).map(x => x.date).sort();
+  return t.length ? { bankId, date: dayjs(t[0]).subtract(1, 'day').format('YYYY-MM-DD'), amount: 0, implicit: true } : null;
 }
 /* Banco principal: el marcado con la casilla; si no hay ninguno marcado, el de mayor último saldo anotado (sin contar el efectivo) */
 function mainBankId() {
@@ -1366,7 +1379,7 @@ function bankMoves(bankId, after) {
   allInLines().forEach(l => { if (l.paid && l.paidDate > after && lineBank(l, 'paidBank') === bankId) pag += Number(l.amount || 0); });
   state.fixedExpensePayments.forEach(p => { const e = byId(state.fixedExpenses, p.expenseId); if (p.date > after && defBank(p.bank || e?.bank) === bankId) pag += Number(p.amount || 0); });
   state.oneOffExpenses.forEach(x => { if (x.paid && x.paidDate > after && defBank(x.paidBank || x.bank) === bankId) pag += Number(x.amount || 0); });
-  state.bankTransfers.forEach(t => { if (t.date > after && t.fromId !== t.toId) { const v = Number(t.amount || 0); if (t.toId === bankId) tras += v; if (t.fromId === bankId) tras -= v; } });
+  state.bankTransfers.forEach(t => { if (t.fromId && t.toId && t.date > after && t.fromId !== t.toId) { const v = Number(t.amount || 0); if (t.toId === bankId) tras += v; if (t.fromId === bankId) tras -= v; } });
   return { cob, pag, tras };
 }
 function bankBalanceNow(bankId) {
@@ -1412,7 +1425,7 @@ function renderBanks() {
           <tr>
             <td>${escapeHtml(b.name)}</td>
             <td>${b.id === CASH ? '' : `<input type="checkbox" data-main="${b.id}" ${b.id === mainId ? 'checked' : ''}>${b.id === mainId && !explicitMain ? ' <span class="muted">(automático: mayor saldo)</span>' : ''}`}</td>
-            <td class="num">${r ? fmtMoney(r.lb.amount) + ' <span class="muted">(' + fmtDate(r.lb.date) + ')</span>' : '<span class="muted">Sin saldo anotado</span>'}</td>
+            <td class="num">${r ? (r.lb.implicit ? '<span class="muted">Sin saldo anotado: se parte de 0 desde el primer traspaso</span>' : fmtMoney(r.lb.amount) + ' <span class="muted">(' + fmtDate(r.lb.date) + ')</span>') : '<span class="muted">Sin saldo anotado</span>'}</td>
             <td class="num" style="color:var(--income)">${r ? '+' + fmtMoney(r.m.cob) : '—'}</td>
             <td class="num" style="color:var(--expense)">${r ? '−' + fmtMoney(r.m.pag) : '—'}</td>
             <td class="num">${r && r.m.tras ? (r.m.tras > 0 ? '+' : '−') + fmtMoney(Math.abs(r.m.tras)) : '—'}</td>
@@ -1433,7 +1446,7 @@ function renderBanks() {
     <div class="card"><div class="topbar" style="margin-bottom:8px"><h2 style="margin:0">Traspasos entre cuentas</h2><button class="btn btn-primary" id="addTrans">+ Traspaso</button></div>
       <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>De</th><th>A</th><th>Importe</th><th>Nota</th></tr></thead><tbody>
         ${trans.length === 0 ? '<tr><td colspan="5" class="empty">Todavía no hay traspasos.</td></tr>' : ''}
-        ${trans.map(t => `<tr data-tr="${t.id}" style="cursor:pointer"><td class="mono">${fmtDate(t.date)}</td><td>${escapeHtml(bname(t.fromId))}</td><td>${escapeHtml(bname(t.toId))}</td><td class="num">${fmtMoney(t.amount)}</td><td class="muted">${escapeHtml(t.note || '')}</td></tr>`).join('')}
+        ${trans.map(t => `<tr data-tr="${t.id}" style="cursor:pointer"><td class="mono">${fmtDate(t.date)}</td><td>${escapeHtml(bname(t.fromId))}</td><td>${t.fromId && t.toId ? escapeHtml(bname(t.toId)) : '<span style="color:var(--expense)">⚠ Incompleto: pulsa para elegir la cuenta</span>'}</td><td class="num">${fmtMoney(t.amount)}</td><td class="muted">${escapeHtml(t.note || '')}</td></tr>`).join('')}
       </tbody></table></div></div>
     <div class="card"><div class="topbar" style="margin-bottom:8px"><h2 style="margin:0">Gastos puntuales</h2><button class="btn btn-primary" id="addOneOff">+ Gasto puntual</button></div>
       <div class="table-wrap"><table><thead><tr><th>Concepto</th><th>Vencimiento</th><th>Se paga por</th><th>Importe</th><th>Estado</th></tr></thead><tbody>
@@ -1678,11 +1691,11 @@ function ivaQuarterItems(today, end) {
   }
   return out;
 }
-function provisionItems(months) {
-  const today = dayjs().startOf('day'), end = dayjs(months[months.length - 1] + '-01').endOf('month'), items = [];
+function provisionItems(months, endOverride) {
+  const today = dayjs().startOf('day'), end = endOverride || dayjs(months[months.length - 1] + '-01').endOf('month'), items = [];
   const cm = months[0];
   allOutLines().filter(l => !l.collected && EFFECT_METHODS.includes(l.method)).forEach(l => items.push({ date: l.dueDate || todayISO(), kind: 'in', cat: 'cobro', label: `${byId(state.clients, l.clientId)?.name || '—'} · ${l.invoiceNumber || ''} (${l.method})`, amount: Number(l.amount || 0), bank: '' }));
-  allInLines().filter(l => !l.paid).forEach(l => items.push({ date: l.dueDate || todayISO(), kind: 'out', cat: 'proveedor', label: `${byId(state.suppliers, l.supplierId)?.name || '—'} · ${l.invoiceNumber || ''} (${l.method})`, amount: Number(l.amount || 0), bank: l.method === 'Efectivo' ? CASH : (EFFECT_METHODS.includes(l.method) ? '' : mainBankId()) }));
+  allInLines().filter(l => !l.paid).forEach(l => items.push({ date: l.dueDate || todayISO(), kind: 'out', cat: 'proveedor', method: l.method, label: `${byId(state.suppliers, l.supplierId)?.name || '—'} · ${l.invoiceNumber || ''} (${l.method})`, amount: Number(l.amount || 0), bank: l.method === 'Efectivo' ? CASH : (EFFECT_METHODS.includes(l.method) ? '' : mainBankId()) }));
   state.oneOffExpenses.filter(x => !x.paid).forEach(x => items.push({ date: x.dueDate || todayISO(), kind: 'out', cat: 'puntual', label: x.concept, amount: Number(x.amount || 0), bank: defBank(x.bank) }));
   state.fixedExpenses.filter(e => !(e.category === 'impuesto' && e.autoIvaCalc)).forEach(e => {
     const cat = e.category || 'gasto', arr = expArrears(e, cm);
@@ -1696,66 +1709,96 @@ function provisionItems(months) {
   ivaQuarterItems(today, end).forEach(i => items.push(i));
   return items.filter(i => !dayjs(i.date).isAfter(end, 'day')).map(i => ({ ...i, overdue: dayjs(i.date).isBefore(today, 'day') })).sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
 }
+const bankNameOf = id => bankOptions(true).find(o => o.value === id)?.label || '';
 function renderProvision() {
-  const months = nextMonths(provisionHorizon);
-  if (!provisionMonth || !nextMonths(12).includes(provisionMonth)) provisionMonth = months[0];
-  const items = provisionItems(months);
+  const mode7 = provisionHorizon === 'd7';
+  const todayD = dayjs().startOf('day'), today = todayD.format('YYYY-MM-DD'), todayMonth = todayD.format('YYYY-MM');
+  let months, endDate, periodKeys;
+  if (mode7) { periodKeys = Array.from({ length: 7 }, (_, i) => todayD.add(i, 'day').format('YYYY-MM-DD')); months = [...new Set(periodKeys.map(d => d.slice(0, 7)))]; endDate = todayD.add(6, 'day'); }
+  else { months = nextMonths(provisionHorizon); periodKeys = months; endDate = dayjs(months[months.length - 1] + '-01').endOf('month'); }
+  const monthChoices = Array.from({ length: 15 }, (_, i) => dayjs().startOf('month').add(i - 3, 'month').format('YYYY-MM'));
+  if (!provisionMonth || !monthChoices.includes(provisionMonth)) provisionMonth = todayMonth;
+  const items = provisionItems(months, endDate);
   const banks = bankList().map(b => ({ b, r: bankBalanceNow(b.id) }));
   const disponible = banks.reduce((s, x) => s + (x.r ? x.r.total : 0), 0), sinSaldo = banks.filter(x => !x.r).length;
-  const bucket = i => i.overdue ? 'venc' : monthKey(i.date);
-  const cols = ['venc', ...months];
-  const sumBy = (pred, k) => items.filter(i => pred(i) && bucket(i) === k).reduce((s, i) => s + i.amount, 0);
+  /* cobros anticipados: efectos negociados que ya suman en el saldo del banco pero aún no figuran en un saldo anotado */
+  const counted = allOutLines().filter(l => l.negotiated && l.collected && l.collectedDate).filter(l => { const bid = lineBank(l, 'collectedBank'); const lb = bid ? lastBalance(bid) : null; return lb && l.collectedDate > lb.date; });
+  let bucket0 = 0, futureAll = 0; const arrivals = {};
+  counted.forEach(l => { const a = Number(l.amount || 0); if (l.collectedDate > today) { futureAll += a; const k = mode7 ? l.collectedDate : l.collectedDate.slice(0, 7); if (periodKeys.includes(k)) arrivals[k] = (arrivals[k] || 0) + a; } else if (l.collectedDate.slice(0, 7) === todayMonth) bucket0 += a; });
+  const bank0 = disponible - bucket0 - futureAll, hasAnt = counted.length > 0;
+  const cols = ['venc', ...periodKeys];
+  const colMonth = k => k === 'venc' ? todayMonth : k.slice(0, 7);
+  const bucketOf = i => i.overdue ? 'venc' : (mode7 ? i.date : i.date.slice(0, 7));
+  const sumBy = (pred, k) => items.filter(i => pred(i) && bucketOf(i) === k).reduce((s, i) => s + i.amount, 0);
+  const R = {}; let bank = bank0, bucket = bucket0, prevM = todayMonth;
+  cols.forEach(k => {
+    const mk = colMonth(k); if (mk !== prevM) { bank += bucket; bucket = 0; prevM = mk; }
+    const cob = sumBy(i => i.kind === 'in', k), obl = sumBy(i => i.kind === 'out', k), arr = arrivals[k] || 0;
+    const consumed = Math.min(bucket, obl), ant = bucket - consumed + arr, eff = obl - consumed;
+    R[k] = { bank, cob, obl, ant, result: bank + ant + cob - eff };
+    bank = bank + cob - eff; bucket = ant;
+  });
   const asegurados = items.filter(i => i.kind === 'in').reduce((s, i) => s + i.amount, 0);
   const oblig = items.filter(i => i.kind === 'out').reduce((s, i) => s + i.amount, 0);
-  const resultado = disponible + asegurados - oblig;
-  const noAseg = allOutLines().filter(l => !l.collected && !EFFECT_METHODS.includes(l.method) && l.dueDate && !dayjs(l.dueDate).isAfter(dayjs(months[months.length - 1] + '-01').endOf('month'), 'day')).reduce((s, l) => s + Number(l.amount || 0), 0);
+  const resultado = R[cols[cols.length - 1]].result;
+  const antTotal = bucket0 + Object.values(arrivals).reduce((s, v) => s + v, 0);
+  const noAseg = allOutLines().filter(l => !l.collected && !EFFECT_METHODS.includes(l.method) && l.dueDate && !dayjs(l.dueDate).isAfter(endDate, 'day')).reduce((s, l) => s + Number(l.amount || 0), 0);
+  const transf = items.filter(i => i.kind === 'out' && i.method === 'Transferencia').reduce((s, i) => s + i.amount, 0);
   const cats = ['proveedor', 'gasto', 'prestamo', 'nomina', 'impuesto', 'iva', 'puntual'].filter(c => items.some(i => i.cat === c));
-  let run = disponible;
-  const net = {}, acc = {};
-  cols.forEach(k => { net[k] = sumBy(i => i.kind === 'in', k) - sumBy(i => i.kind === 'out', k); run += net[k]; acc[k] = run; });
-  const colLabel = k => k === 'venc' ? 'Vencido' : monthLabel(k);
-  const cell = (v, cls) => `<td class="${v ? cls : ''}">${v ? fmtMoney(v) : '—'}</td>`;
-  const bankLabel = id => bankOptions().find(o => o.value === id)?.label || '';
+  const colLabel = k => k === 'venc' ? 'Vencido' : mode7 ? dayjs(k).format('ddd D/M') : monthLabel(k);
+  const G = 'color:#14663c;font-weight:600', RED = 'color:var(--expense)';
+  const tdMoney = (v, st) => `<td class="num" style="${st}">${v ? fmtMoney(v) : '—'}</td>`;
+  const catTotal = c => items.filter(i => i.cat === c).reduce((s, i) => s + i.amount, 0);
   const perBank = banks.map(x => ({ b: x.b, saldo: x.r ? x.r.total : null, oblig: items.filter(i => i.kind === 'out' && i.bank === x.b.id).reduce((s, i) => s + i.amount, 0) }));
   const sinBanco = items.filter(i => i.kind === 'out' && !banks.some(x => x.b.id === i.bank)).reduce((s, i) => s + i.amount, 0);
+  const horizons = [['d7', '7 días'], [1, '1 mes'], [2, '2 meses'], [3, '3 meses'], [6, '6 meses'], [12, '12 meses']];
+  const needRows = perBank.filter(p => p.oblig > 0).map(p => ({ ...p, need: Math.max(0, p.oblig - (p.saldo || 0)) }));
+  const needTotal = needRows.reduce((s, p) => s + p.need, 0);
   document.getElementById('main').innerHTML = `
     <div class="topbar"><div><h1>Provisión de tesorería</h1><div class="subtitle">Lo que tienes, lo que te entrará con seguridad razonable y lo que debes en ese plazo</div></div>
       <div><button class="btn" id="addOneOff2">+ Gasto puntual</button> <button class="btn" id="addExpense">+ Gasto fijo / préstamo / impuesto / nómina</button></div></div>
-    <div class="section-toggle">${[1, 2, 3, 6, 12].map(n => `<button data-h="${n}" class="${provisionHorizon === n ? 'active' : ''}">${n === 1 ? '1 mes' : n + ' meses'}</button>`).join('')}</div>
+    <div class="section-toggle">${horizons.map(([v, l]) => `<button data-h="${v}" class="${provisionHorizon === v ? 'active' : ''}">${l}</button>`).join('')}</div>
     <div class="kpi-row">
       <div class="kpi"><div class="label">Disponible hoy (estimado)</div><div class="value">${fmtMoney(disponible)}</div><div class="muted">${sinSaldo ? sinSaldo + ' cuenta(s) sin saldo anotado: ' : ''}<a href="#" id="goBanks">ver Bancos</a></div></div>
-      <div class="kpi"><div class="label">Cobros asegurados</div><div class="value income">+${fmtMoney(asegurados)}</div><div class="muted">Pagarés, confirming y cheques</div></div>
-      <div class="kpi"><div class="label">Obligaciones</div><div class="value" style="color:var(--expense)">−${fmtMoney(oblig)}</div><div class="muted">Proveedores, fijos, puntuales e IVA</div></div>
-      <div class="kpi"><div class="label">Saldo previsto al final</div><div class="value" style="color:var(${resultado >= 0 ? '--income' : '--expense'})">${fmtMoney(resultado)}</div><div class="muted">${resultado >= 0 ? 'Cubres lo que debes y te quedan ' + fmtMoney(resultado) : 'Te faltan ' + fmtMoney(-resultado) + ' para cubrirlo'}</div></div>
+      <div class="kpi"><div class="label">Cobros asegurados</div><div class="value" style="${G}">+${fmtMoney(asegurados)}</div><div class="muted">Pagarés, confirming y cheques</div></div>
+      <div class="kpi"><div class="label">Obligaciones</div><div class="value" style="${RED}">−${fmtMoney(oblig)}</div><div class="muted">Proveedores, fijos, puntuales e IVA</div></div>
+      <div class="kpi"><div class="label">Saldo previsto al final</div><div class="value" style="color:var(${resultado >= 0 ? '--income' : '--expense'})">${fmtMoney(resultado)}</div><div class="muted">${resultado >= 0 ? 'Cubres lo que debes y te quedan ' + fmtMoney(resultado) : 'Te faltan ' + fmtMoney(-resultado) + ': puedes negociar efectos en la hoja Efectos'}</div></div>
     </div>
-    ${noAseg > 0 ? `<div class="muted" style="margin:6px 2px 12px">No contado: ${fmtMoney(noAseg)} de cobros pendientes por transferencia u otros medios sin asegurar con vencimiento en este plazo.</div>` : ''}
-    <div class="card"><div class="table-wrap"><table class="prov-table">
+    ${noAseg > 0 ? `<div class="muted" style="margin:6px 2px 4px">No contado: ${fmtMoney(noAseg)} de cobros pendientes por transferencia u otros medios sin asegurar con vencimiento en este plazo.</div>` : ''}
+    ${transf > 0 ? `<div class="muted" style="margin:0 2px 12px">De las obligaciones, ${fmtMoney(transf)} son pagos por transferencia: se asignan al banco principal (${escapeHtml(bankNameOf(mainBankId()) || 'sin definir')}) salvo que indiques otro banco en cada pago.</div>` : ''}
+    ${mode7 ? `<div class="card"><h2>Ingreso necesario hasta el ${fmtDate(endDate.format('YYYY-MM-DD'))}</h2>
+      ${needRows.length === 0 ? '<div class="muted">No hay pagos asignados a ninguna cuenta en estos 7 días.</div>' : `<div class="table-wrap"><table><thead><tr><th>Cuenta</th><th>Pagos asignados (incluye vencidos)</th><th>Saldo estimado</th><th>Hay que ingresar</th></tr></thead><tbody>
+        ${needRows.map(p => `<tr><td>${escapeHtml(p.b.name)}</td><td class="num" style="${RED}">−${fmtMoney(p.oblig)}</td><td class="num">${p.saldo === null ? '<span class="muted">Sin saldo anotado</span>' : fmtMoney(p.saldo)}</td><td class="num" style="font-weight:700;color:${p.need > 0 ? 'var(--expense)' : '#14663c'}">${p.need > 0 ? fmtMoney(p.need) : 'Nada: cubierto'}</td></tr>`).join('')}
+        ${sinBanco > 0 ? `<tr><td>Sin banco indicado</td><td class="num" style="${RED}">−${fmtMoney(sinBanco)}</td><td></td><td class="muted">Asigna banco a estos pagos</td></tr>` : ''}
+        </tbody></table></div><div style="margin-top:8px"><strong>Total a ingresar: <span style="color:${needTotal > 0 ? 'var(--expense)' : '#14663c'}">${fmtMoney(needTotal)}</span></strong> <span class="muted">· no cuenta los cobros que puedan entrar esa semana</span></div>`}</div>` : ''}
+    <div class="card"><h2>Provisión ${mode7 ? 'a 7 días' : 'a ' + provisionHorizon + (provisionHorizon === 1 ? ' mes' : ' meses')}</h2><div class="table-wrap"><table class="prov-table">
       <thead><tr><th>Concepto</th>${cols.map(k => `<th>${colLabel(k)}</th>`).join('')}<th>Total</th></tr></thead>
       <tbody>
-        <tr><td>Cobros asegurados</td>${cols.map(k => cell(sumBy(i => i.cat === 'cobro', k), 'pos')).join('')}<td class="pos">${fmtMoney(asegurados)}</td></tr>
-        ${cats.map(c => `<tr><td>${PROV_CATS[c]}</td>${cols.map(k => cell(sumBy(i => i.cat === c, k), 'neg')).join('')}<td class="neg">${fmtMoney(items.filter(i => i.cat === c).reduce((s, i) => s + i.amount, 0))}</td></tr>`).join('')}
-        <tr class="total"><td>Total obligaciones</td>${cols.map(k => cell(sumBy(i => i.kind === 'out', k), 'neg')).join('')}<td class="neg">${fmtMoney(oblig)}</td></tr>
-        <tr class="net"><td>Saldo del periodo</td>${cols.map(k => `<td class="${net[k] >= 0 ? 'pos' : 'neg'}">${fmtMoney(net[k])}</td>`).join('')}<td class="${asegurados - oblig >= 0 ? 'pos' : 'neg'}">${fmtMoney(asegurados - oblig)}</td></tr>
-        <tr class="net"><td>Saldo acumulado (desde ${fmtMoney(disponible)})</td>${cols.map(k => `<td class="${acc[k] >= 0 ? 'pos' : 'neg'}">${fmtMoney(acc[k])}</td>`).join('')}<td></td></tr>
-      </tbody></table></div></div>
+        <tr><td style="${G}">Saldo bancario</td>${cols.map(k => `<td class="num" style="${G}">${fmtMoney(R[k].bank)}</td>`).join('')}<td class="num" style="${G}">${fmtMoney(bank0)}</td></tr>
+        <tr><td style="${G}">Cobros asegurados</td>${cols.map(k => tdMoney(R[k].cob, G)).join('')}${tdMoney(asegurados, G)}</tr>
+        ${hasAnt ? `<tr><td style="${G}">Cobros anticipados</td>${cols.map(k => tdMoney(R[k].ant, G)).join('')}${tdMoney(antTotal, G)}</tr>` : ''}
+        ${cats.map(c => `<tr><td>${PROV_CATS[c]}</td>${cols.map(k => tdMoney(sumBy(i => i.cat === c, k), RED)).join('')}${tdMoney(catTotal(c), RED)}</tr>`).join('')}
+        <tr style="border-top:2px solid #333"><td style="font-weight:700">SALDO RESULTANTE</td>${cols.map(k => `<td class="num" style="font-weight:700;color:${R[k].result >= 0 ? '#14663c' : 'var(--expense)'}">${fmtMoney(R[k].result)}</td>`).join('')}<td class="num" style="font-weight:700;color:${resultado >= 0 ? '#14663c' : 'var(--expense)'}">${fmtMoney(resultado)}</td></tr>
+      </tbody></table></div>
+      ${hasAnt ? '<div class="muted" style="margin-top:6px">Cobros anticipados: dinero negociado que aún no figura en el saldo del banco. Los pagos de los periodos siguientes se descuentan primero de él (por eso la fila de pagos puede ser mayor que lo que baja el saldo), y al cambiar de mes lo que sobra pasa a la línea del saldo bancario.</div>' : ''}</div>
     <div class="card"><h2>Por banco</h2><div class="table-wrap"><table>
       <thead><tr><th>Cuenta</th><th>Saldo estimado</th><th>Obligaciones asignadas a esta cuenta</th><th>Saldo tras pagarlas</th></tr></thead><tbody>
-        ${perBank.map(p => `<tr><td>${escapeHtml(p.b.name)}</td><td class="num">${p.saldo === null ? '<span class="muted">Sin saldo anotado</span>' : fmtMoney(p.saldo)}</td><td class="num neg">${p.oblig ? '−' + fmtMoney(p.oblig) : '—'}</td><td class="num ${p.saldo !== null && p.saldo - p.oblig < 0 ? 'neg' : ''}">${p.saldo === null ? '—' : fmtMoney(p.saldo - p.oblig)}${p.saldo !== null && p.saldo - p.oblig < 0 ? ' ⚠' : ''}</td></tr>`).join('')}
-        <tr><td>Sin banco indicado</td><td></td><td class="num neg">${sinBanco ? '−' + fmtMoney(sinBanco) : '—'}</td><td></td></tr>
-      </tbody></table></div><div class="muted" style="margin-top:6px">⚠ = la cuenta no llega para lo que tiene asignado: habría que mover dinero entre cuentas o esperar cobros.</div></div>
+        ${perBank.map(p => `<tr><td>${escapeHtml(p.b.name)}</td><td class="num">${p.saldo === null ? '<span class="muted">Sin saldo anotado</span>' : fmtMoney(p.saldo)}</td><td class="num" style="${RED}">${p.oblig ? '−' + fmtMoney(p.oblig) : '—'}</td><td class="num" style="${p.saldo !== null && p.saldo - p.oblig < 0 ? RED : ''}">${p.saldo === null ? '—' : fmtMoney(p.saldo - p.oblig)}${p.saldo !== null && p.saldo - p.oblig < 0 ? ' ⚠' : ''}</td></tr>`).join('')}
+        <tr><td>Sin banco indicado</td><td></td><td class="num" style="${RED}">${sinBanco ? '−' + fmtMoney(sinBanco) : '—'}</td><td></td></tr>
+      </tbody></table></div><div class="muted" style="margin-top:6px">⚠ = la cuenta no llega para lo que tiene asignado: habría que hacer un traspaso o esperar cobros.</div></div>
     <div class="card"><h2>Detalle de movimientos previstos</h2><div class="table-wrap"><table>
       <thead><tr><th>Fecha</th><th>Concepto</th><th>Tipo</th><th>Banco</th><th>Importe</th></tr></thead><tbody>
         ${items.length === 0 ? '<tr><td colspan="5" class="empty">No hay movimientos previstos en este plazo.</td></tr>' : ''}
-        ${items.map(i => `<tr><td class="mono">${fmtDate(i.date)}${i.overdue ? ' <span class="pill pill-expense">Vencido</span>' : ''}</td><td>${escapeHtml(i.label)}</td><td class="muted">${PROV_CATS[i.cat]}</td><td class="muted">${escapeHtml(bankLabel(i.bank) || '—')}</td><td class="num ${i.kind === 'in' ? 'pos' : 'neg'}">${i.kind === 'in' ? '+' : '−'}${fmtMoney(i.amount)}</td></tr>`).join('')}
+        ${items.map(i => `<tr><td class="mono">${fmtDate(i.date)}${i.overdue ? ' <span class="pill pill-expense">Vencido</span>' : ''}</td><td>${escapeHtml(i.label)}</td><td class="muted">${PROV_CATS[i.cat]}</td><td class="muted">${escapeHtml(bankNameOf(i.bank) || '—')}</td><td class="num" style="${i.kind === 'in' ? G : RED}">${i.kind === 'in' ? '+' : '−'}${fmtMoney(i.amount)}</td></tr>`).join('')}
       </tbody></table></div></div>
-    <div class="card"><div class="month-nav"><span class="muted">Pagos de gastos fijos del mes:</span>
-      <select id="monthSelect">${nextMonths(12).map(mm => `<option value="${mm}" ${mm === provisionMonth ? 'selected' : ''}>${monthLabel(mm)}</option>`).join('')}</select></div></div>
-    ${fixedMonthCard(provisionMonth)}
+    <div class="card"><div class="month-nav"><span class="muted">Gastos fijos y movimientos de:</span>
+      <select id="monthSelect">${monthChoices.map(mm => `<option value="${mm}" ${mm === provisionMonth ? 'selected' : ''}>${monthLabel(mm)}</option>`).join('')}</select></div></div>
+    ${fixedCards(provisionMonth)}
   `;
   document.getElementById('addExpense').onclick = () => openEntityModal('fixedExpense');
   document.getElementById('addOneOff2').onclick = () => openEntityModal('oneOffExpense');
   document.getElementById('goBanks').onclick = (e) => { e.preventDefault(); currentSection = 'banks'; currentDetail = {}; render(); };
-  document.querySelectorAll('[data-h]').forEach(b => b.onclick = () => { provisionHorizon = Number(b.dataset.h); render(); });
+  document.querySelectorAll('[data-h]').forEach(b => b.onclick = () => { provisionHorizon = b.dataset.h === 'd7' ? 'd7' : Number(b.dataset.h); render(); });
   document.getElementById('monthSelect').onchange = (e) => { provisionMonth = e.target.value; render(); };
   document.querySelectorAll('[data-payexp]').forEach(b => b.onclick = () => openEntityModal('expensePayment', null, { expenseId: b.dataset.payexp, month: b.dataset.m, amount: Number(b.dataset.pend), date: todayISO(), bank: byId(state.fixedExpenses, b.dataset.payexp)?.bank || '' }));
   document.querySelectorAll('[data-pid]').forEach(tr => tr.onclick = () => openEntityModal('expensePayment', tr.dataset.pid));
@@ -1787,6 +1830,34 @@ function renderGroupedSection(list, dateField, nameResolver, totalLabel, actions
   `;
 }
 
+async function applyOutLineUpdate(l, patch) {
+  if (l.id) await db.collection('invoiceOutPayments').doc(l.id).update(patch);
+  else await db.collection('invoicesOut').doc(l.invoiceId).update(patch);
+}
+function negotiableLines() { return allOutLines().filter(l => !l.collected && EFFECT_METHODS.includes(l.method)).map(l => ({ ...l, key: (l.invoiceId || '') + '|' + (l.id || '') })).sort((a, b) => (a.dueDate || '') < (b.dueDate || '') ? -1 : 1); }
+function negociarCardHtml() {
+  const lines = negotiableLines(), banks = bankOptions(false).filter(o => o.value !== CASH && o.value !== '');
+  return `<div class="card"><h2>Negociar un efecto (cobro anticipado)</h2>
+    ${lines.length === 0 ? '<div class="empty">No hay efectos pendientes de cobro para negociar.</div>' : `
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+      <label style="font-size:12px">Efecto<br><select id="negEffect"><option value="">Elige el efecto…</option>${lines.map(l => `<option value="${escapeHtml(l.key)}">${escapeHtml(byId(state.clients, l.clientId)?.name || '—')} · ${escapeHtml(l.invoiceNumber || '')} · vence ${fmtDate(l.dueDate)} · ${fmtMoney(l.amount)}</option>`).join('')}</select></label>
+      <label style="font-size:12px">Banco donde entra el dinero<br><select id="negBank"><option value="">Elige el banco…</option>${banks.map(o => `<option value="${o.value}">${escapeHtml(o.label)}</option>`).join('')}</select></label>
+      <label style="font-size:12px">Fecha<br><input type="date" id="negDate" value="${todayISO()}"></label>
+      <button class="btn btn-primary" id="negGo" disabled>Negociar</button></div>
+    <div class="muted" style="margin-top:8px">Se anota como cobrado por el importe nominal y en Provisión aparece como «Cobros anticipados». El banco descontará intereses y gastos: cuando los conozcas, añádelos como gasto puntual en la hoja Bancos para que cuenten en el balance.</div>`}</div>`;
+}
+function setupNegociar() {
+  const go = document.getElementById('negGo'); if (!go) return;
+  const e = document.getElementById('negEffect'), b = document.getElementById('negBank'), d = document.getElementById('negDate');
+  const sync = () => { go.disabled = !(e.value && b.value && d.value); };
+  [e, b, d].forEach(x => x.onchange = sync); sync();
+  go.onclick = async () => {
+    const line = negotiableLines().find(l => l.key === e.value); if (!line) return;
+    go.disabled = true;
+    try { await applyOutLineUpdate(line, { collected: true, collectedDate: d.value, collectedBank: b.value, negotiated: true }); showToast('Efecto negociado: anotado como cobrado'); }
+    catch (err) { console.error(err); showToast('No se pudo negociar. Inténtalo de nuevo.'); go.disabled = false; }
+  };
+}
 function renderEffects() {
   const allLines = allOutLines().filter(l => EFFECT_METHODS.includes(l.method)).map(l => ({...l, key: l.id ? 'p:'+l.id : 'i:'+l.invoiceId}));
   const toRemit = allLines.filter(l => !l.collected && !l.remesado && daysUntil(l.dueDate) <= 7).sort((a,b)=>daysUntil(a.dueDate)-daysUntil(b.dueDate));
@@ -1839,7 +1910,9 @@ function renderEffects() {
       <button data-tab="cobrados" class="${effectsTab==='cobrados'?'active':''}">Cobrados (${collected.length})</button>
     </div>
     ${body}
+    ${effectsTab === 'pendientes' ? negociarCardHtml() : ''}
   `;
+  setupNegociar();
   document.querySelectorAll('.section-toggle button').forEach(b => b.onclick = () => { effectsTab = b.dataset.tab; effectsSelected = new Set(); render(); });
   const pagLines = {}; pendingPayFiltered.forEach(l => { pagLines[(l.invoiceId || '') + '|' + (l.id || '')] = l; });
   document.querySelectorAll('[data-pag]').forEach(b => b.onclick = ev => {
@@ -1974,6 +2047,7 @@ const ENTITY_CONFIG = {
       { key:'collected', label:'Ya cobrada', type:'checkbox' },
       { key:'collectedDate', label:'Fecha de cobro', type:'date', showIf: d => d.collected },
       { key:'collectedBank', label:'Cobrada en (banco)', type:'select', options: () => bankOptions(), showIf: d => d.collected },
+      { key:'negotiated', label:'Negociado con el banco (cobro anticipado)', type:'checkbox', showIf: d => d.collected && EFFECT_METHODS.includes(d.paymentMethod) },
       { key:'remesado', label:'Efecto ya remesado', type:'checkbox', showIf: d => EFFECT_METHODS.includes(d.paymentMethod) },
       { key:'remittanceBank', label:'Banco donde se remesará (el tuyo)', type:'text', showIf: d => EFFECT_METHODS.includes(d.paymentMethod) },
     ],
@@ -2128,6 +2202,7 @@ function renderModal(type, cfg, id) {
               let opts = resolveOptions(f);
               opts = (typeof opts[0] === 'string' ? opts.map(o=>({value:o,label:o})) : opts);
               if (val !== '' && !opts.some(o=>String(o.value)===String(val))) opts = [{value:val,label:val+' (actual)'}, ...opts];
+              if (val === '' && !opts.some(o=>String(o.value)==='')) opts = [{value:'',label:'— Elige —'}, ...opts];
               const optsHtml = opts.map(o => `<option value="${escapeHtml(o.value)}" ${String(o.value)===String(val)?'selected':''}>${escapeHtml(o.label)}</option>`).join('');
               return `<div class="form-row"><label>${f.label}${f.required?' *':''}</label><select data-key="${f.key}">${optsHtml}</select></div>`;
             }
@@ -2165,6 +2240,8 @@ function renderModal(type, cfg, id) {
     e.preventDefault();
     const data = { ...modalDraft };
     delete data._pmTouched; delete data._dueDateAuto;
+    const faltan = cfg.fields.filter(f => f.required && (!f.showIf || f.showIf(modalDraft)) && (data[f.key] === undefined || data[f.key] === null || data[f.key] === '')).map(f => f.label.replace(/\s*\(.*$/, ''));
+    if (faltan.length) { showToast('Falta rellenar: ' + faltan.join(', ')); return; }
     cfg.fields.forEach(f => {
       if (f.type === 'number' && data[f.key] !== '' && data[f.key] != null) data[f.key] = Number(data[f.key]);
       if (f.type === 'checkbox') data[f.key] = !!data[f.key];
