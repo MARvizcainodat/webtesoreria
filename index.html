@@ -217,14 +217,14 @@
 (function () {
   if (typeof window.claude !== 'undefined') return;
   var CFG_KEY = 'panelTesoreriaCfg';
-  var COLS = ['clients','suppliers','works','invoicesOut','invoicesIn','fixedExpenses','fixedExpensePayments','workBudgetItems','priceListItems','invoiceOutPayments','invoiceInPayments','bankAccounts','bankBalances','oneOffExpenses'];
+  var COLS = ['clients','suppliers','works','invoicesOut','invoicesIn','fixedExpenses','fixedExpensePayments','workBudgetItems','priceListItems','invoiceOutPayments','invoiceInPayments','bankAccounts','bankBalances','oneOffExpenses','bankTransfers'];
   var getCfg = function () { try { return JSON.parse(localStorage.getItem(CFG_KEY) || 'null'); } catch (e) { return null; } };
   var setCfg = function (c) { try { if (c) localStorage.setItem(CFG_KEY, JSON.stringify(c)); else localStorage.removeItem(CFG_KEY); } catch (e) {} };
 
   /* ---------- defensa de formatos: fechas, importes y casillas que lleguen como texto ---------- */
-  var DATE_F = ['date','dueDate','paidDate','collectedDate','nextDate','remittanceDate','emissionDate','issueDate'];
+  var DATE_F = ['date','dueDate','paidDate','collectedDate','nextDate','remittanceDate','emissionDate','issueDate','lastDate'];
   var NUM_F = ['amount','budget','paymentTermDays','installmentsRemaining','quantity','unitPrice','price','base','iva','ivaAmount','ivaRate'];
-  var BOOL_F = ['collected','paid','remesado','autoIvaCalc','received','archived','ivaExempt'];
+  var BOOL_F = ['collected','paid','remesado','autoIvaCalc','received','archived','ivaExempt','main'];
   var pad = function (n) { return (n < 10 ? '0' : '') + n; };
   var okDate = function (y, m, d) { var t = new Date(Date.UTC(y, m - 1, d)); return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d; };
   var iso = function (y, m, d) { return okDate(y, m, d) ? y + '-' + pad(m) + '-' + pad(d) : null; };
@@ -436,9 +436,9 @@ const WORK_STATUSES = ['Presupuestada', 'Contratada', 'Finalizada'];
 
 let db = null;
 let state = {
-  clients: [], suppliers: [], works: [], invoicesOut: [], invoicesIn: [], fixedExpenses: [], fixedExpensePayments: [], bankAccounts: [], bankBalances: [], oneOffExpenses: [],
+  clients: [], suppliers: [], works: [], invoicesOut: [], invoicesIn: [], fixedExpenses: [], fixedExpensePayments: [], bankAccounts: [], bankBalances: [], oneOffExpenses: [], bankTransfers: [],
   workBudgetItems: [], priceListItems: [], invoiceOutPayments: [], invoiceInPayments: [],
-  loaded: { clients:false, suppliers:false, works:false, invoicesOut:false, invoicesIn:false, fixedExpenses:false, fixedExpensePayments:false, bankAccounts:false, bankBalances:false, oneOffExpenses:false, workBudgetItems:false, priceListItems:false, invoiceOutPayments:false, invoiceInPayments:false },
+  loaded: { clients:false, suppliers:false, works:false, invoicesOut:false, invoicesIn:false, fixedExpenses:false, fixedExpensePayments:false, bankAccounts:false, bankBalances:false, oneOffExpenses:false, bankTransfers:false, workBudgetItems:false, priceListItems:false, invoiceOutPayments:false, invoiceInPayments:false },
 };
 let currentSection = 'dashboard';
 let currentDetail = { type: null, id: null };
@@ -487,7 +487,7 @@ function showToast(msg) {
 
 function outLines(inv) {
   const custom = state.invoiceOutPayments.filter(p => p.invoiceId === inv.id);
-  if (!custom.length) return [{ id:null, invoiceId:inv.id, amount:Number(inv.amount||0), date:inv.date, dueDate:inv.dueDate, method:inv.paymentMethod, issuingBank:inv.issuingBank||'', remesado:!!inv.remesado, remittanceBank:inv.remittanceBank||'', collected:!!inv.collected, collectedDate:inv.collectedDate||'', collectedBank:inv.collectedBank||'', emissionDate:inv.emissionDate||'', _implicit:true }];
+  if (!custom.length) return [{ id:null, invoiceId:inv.id, amount:Number(inv.amount||0), date:inv.date, dueDate:inv.dueDate, method:inv.paymentMethod, issuingBank:inv.issuingBank||'', remesado:!!inv.remesado, remittanceBank:inv.remittanceBank||'', remittanceDate:inv.remittanceDate||'', remittanceId:inv.remittanceId||'', remittanceBankId:inv.remittanceBankId||'', collected:!!inv.collected, collectedDate:inv.collectedDate||'', collectedBank:inv.collectedBank||'', emissionDate:inv.emissionDate||'', _implicit:true }];
   return custom;
 }
 function inLines(inv) {
@@ -562,7 +562,8 @@ function expenseOccursInMonth(exp, mKey) {
   if (['mensual','quincenal','semanal'].includes(exp.frequency)) occurs = diff >= 0;
   else if (exp.frequency === 'trimestral') occurs = diff >= 0 && diff % 3 === 0;
   else if (exp.frequency === 'anual') occurs = diff >= 0 && diff % 12 === 0;
-  if (occurs && exp.category === 'prestamo' && exp.installmentsRemaining != null && exp.installmentsRemaining !== '') {
+  if (occurs && exp.category === 'prestamo' && exp.lastDate && dayjs(exp.lastDate).isValid() && target.isAfter(dayjs(exp.lastDate), 'month')) occurs = false;
+  if (occurs && exp.category === 'prestamo' && !exp.lastDate && exp.installmentsRemaining != null && exp.installmentsRemaining !== '') {
     const occurrenceIndex = exp.frequency !== 'trimestral' && exp.frequency !== 'anual' ? diff : exp.frequency === 'trimestral' ? diff / 3 : diff / 12;
     if (occurrenceIndex >= Number(exp.installmentsRemaining)) occurs = false;
   }
@@ -703,7 +704,7 @@ async function initDb() {
   await maybeSeed();
 }
 function subscribeAll() {
-  const cols = ['clients','suppliers','works','invoicesOut','invoicesIn','fixedExpenses','fixedExpensePayments','bankAccounts','bankBalances','oneOffExpenses','workBudgetItems','priceListItems','invoiceOutPayments','invoiceInPayments'];
+  const cols = ['clients','suppliers','works','invoicesOut','invoicesIn','fixedExpenses','fixedExpensePayments','bankAccounts','bankBalances','oneOffExpenses','bankTransfers','workBudgetItems','priceListItems','invoiceOutPayments','invoiceInPayments'];
   cols.forEach(col => {
     db.collection(col).onSnapshot(
       snap => { state[col] = snap.docs.map(d => ({ id: d.id, ...d.data() })); state.loaded[col] = true; render(); },
@@ -1343,55 +1344,132 @@ function lastBalance(bankId) {
   const rows = state.bankBalances.filter(b => b.bankId === bankId && b.date).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   return rows.length ? rows[rows.length - 1] : null;
 }
-const lineBank = (l, field) => l[field] || (l.method === 'Efectivo' ? CASH : '');
+/* Banco principal: el marcado con la casilla; si no hay ninguno marcado, el de mayor último saldo anotado (sin contar el efectivo) */
+function mainBankId() {
+  const accs = state.bankAccounts.filter(b => !b.archived);
+  const marked = accs.find(b => b.main); if (marked) return marked.id;
+  let best = null, bestAmt = -Infinity;
+  accs.forEach(b => { const lb = lastBalance(b.id); const v = lb ? Number(lb.amount || 0) : -Infinity; if (v > bestAmt) { bestAmt = v; best = b.id; } });
+  return best || (accs[0] && accs[0].id) || '';
+}
+/* Efectivo -> caja; transferencia (o sin forma de pago) -> el banco indicado o el principal; efectos -> el banco indicado o el de la remesa */
+function lineBank(l, field) {
+  if (l[field]) return l[field];
+  if (l.method === 'Efectivo') return CASH;
+  if (EFFECT_METHODS.includes(l.method)) return l.remittanceBankId || '';
+  return mainBankId();
+}
+const defBank = id => id || mainBankId();
 function bankMoves(bankId, after) {
-  let cob = 0, pag = 0;
+  let cob = 0, pag = 0, tras = 0;
   allOutLines().forEach(l => { if (l.collected && l.collectedDate > after && lineBank(l, 'collectedBank') === bankId) cob += Number(l.amount || 0); });
   allInLines().forEach(l => { if (l.paid && l.paidDate > after && lineBank(l, 'paidBank') === bankId) pag += Number(l.amount || 0); });
-  state.fixedExpensePayments.forEach(p => { const e = byId(state.fixedExpenses, p.expenseId); if (p.date > after && (p.bank || e?.bank || '') === bankId) pag += Number(p.amount || 0); });
-  state.oneOffExpenses.forEach(x => { if (x.paid && x.paidDate > after && (x.paidBank || x.bank || '') === bankId) pag += Number(x.amount || 0); });
-  return { cob, pag };
+  state.fixedExpensePayments.forEach(p => { const e = byId(state.fixedExpenses, p.expenseId); if (p.date > after && defBank(p.bank || e?.bank) === bankId) pag += Number(p.amount || 0); });
+  state.oneOffExpenses.forEach(x => { if (x.paid && x.paidDate > after && defBank(x.paidBank || x.bank) === bankId) pag += Number(x.amount || 0); });
+  state.bankTransfers.forEach(t => { if (t.date > after && t.fromId !== t.toId) { const v = Number(t.amount || 0); if (t.toId === bankId) tras += v; if (t.fromId === bankId) tras -= v; } });
+  return { cob, pag, tras };
 }
 function bankBalanceNow(bankId) {
   const lb = lastBalance(bankId); if (!lb) return null;
   const m = bankMoves(bankId, lb.date);
-  return { lb, m, total: Number(lb.amount || 0) + m.cob - m.pag };
+  return { lb, m, total: Number(lb.amount || 0) + m.cob - m.pag + m.tras };
+}
+let remOpen = new Set();
+function remesaGroups() {
+  const g = {};
+  allOutLines().filter(l => EFFECT_METHODS.includes(l.method) && l.remesado).forEach(l => {
+    const bank = l.remittanceBankId ? (state.bankAccounts.find(b => b.id === l.remittanceBankId)?.name || l.remittanceBank || '—') : (l.remittanceBank || '—');
+    const key = l.remittanceId || ((l.remittanceDate || '') + '|' + bank);
+    (g[key] = g[key] || { key, date: l.remittanceDate || '', bank, lines: [] }).lines.push(l);
+  });
+  return Object.values(g).sort((x, y) => x.date < y.date ? 1 : x.date > y.date ? -1 : 0);
+}
+function loanInfo(e) {
+  if (e.category !== 'prestamo') return '—';
+  if (e.lastDate && dayjs(e.lastDate).isValid()) {
+    let n = 0, m = dayjs().format('YYYY-MM'); const last = dayjs(e.lastDate).format('YYYY-MM');
+    while (m <= last && n < 600) { if (expenseOccursInMonth(e, m)) n++; m = dayjs(m + '-01').add(1, 'month').format('YYYY-MM'); }
+    return `${n} plazo(s) · último ${fmtDate(e.lastDate)}`;
+  }
+  return e.installmentsRemaining ? `${e.installmentsRemaining} cuotas (dato antiguo: indica la fecha del último plazo)` : '—';
 }
 function renderBanks() {
   const list = bankList().map(b => ({ b, r: bankBalanceNow(b.id) }));
   const known = list.filter(x => x.r).reduce((s, x) => s + x.r.total, 0);
+  const mainId = mainBankId(), explicitMain = state.bankAccounts.some(b => b.main && !b.archived);
   const oneOff = state.oneOffExpenses.slice().sort((a, b) => (a.dueDate || '') < (b.dueDate || '') ? -1 : 1);
+  const rems = remesaGroups();
+  const trans = state.bankTransfers.slice().sort((a, b) => (a.date || '') < (b.date || '') ? 1 : -1);
+  const bname = id => bankOptions(false).find(o => o.value === id)?.label || '—';
+  const remStatus = g => { const n = g.lines.filter(l => l.collected).length; return n === g.lines.length ? '<span class="pill pill-income">Cobrada</span>' : n === 0 ? '<span class="pill pill-info">Pendiente de cobro</span>' : '<span class="pill pill-warn">Cobrada en parte</span>'; };
   document.getElementById('main').innerHTML = `
-    <div class="topbar"><div><h1>Bancos y efectivo</h1><div class="subtitle">Saldo estimado = último saldo anotado + cobros − pagos con fecha posterior</div></div>
+    <div class="topbar"><div><h1>Bancos y efectivo</h1><div class="subtitle">Saldo estimado = último saldo anotado + cobros − pagos + traspasos con fecha posterior</div></div>
       <div><button class="btn" id="addBank">+ Banco</button> <button class="btn btn-primary" id="addBal">+ Anotar saldo</button></div></div>
-    <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>Cuenta</th><th>Último saldo anotado</th><th>Cobros</th><th>Pagos</th><th>Saldo estimado</th><th></th></tr></thead>
+    <div class="card"><h2>Saldos</h2><div class="table-wrap"><table>
+      <thead><tr><th>Cuenta</th><th>Principal</th><th>Último saldo anotado</th><th>Cobros</th><th>Pagos</th><th>Traspasos</th><th>Saldo estimado</th><th></th></tr></thead>
       <tbody>
         ${list.map(({ b, r }) => `
           <tr>
             <td>${escapeHtml(b.name)}</td>
+            <td>${b.id === CASH ? '' : `<input type="checkbox" data-main="${b.id}" ${b.id === mainId ? 'checked' : ''}>${b.id === mainId && !explicitMain ? ' <span class="muted">(automático: mayor saldo)</span>' : ''}`}</td>
             <td class="num">${r ? fmtMoney(r.lb.amount) + ' <span class="muted">(' + fmtDate(r.lb.date) + ')</span>' : '<span class="muted">Sin saldo anotado</span>'}</td>
-            <td class="num" style="color:var(--income, #1b7f4b)">${r ? '+' + fmtMoney(r.m.cob) : '—'}</td>
-            <td class="num" style="color:var(--expense, #b3261e)">${r ? '−' + fmtMoney(r.m.pag) : '—'}</td>
+            <td class="num" style="color:var(--income)">${r ? '+' + fmtMoney(r.m.cob) : '—'}</td>
+            <td class="num" style="color:var(--expense)">${r ? '−' + fmtMoney(r.m.pag) : '—'}</td>
+            <td class="num">${r && r.m.tras ? (r.m.tras > 0 ? '+' : '−') + fmtMoney(Math.abs(r.m.tras)) : '—'}</td>
             <td class="num"><strong>${r ? fmtMoney(r.total) : '—'}</strong></td>
             <td><button class="btn btn-sm" data-bal="${b.id}">Anotar saldo</button> <button class="btn btn-sm" data-hist="${b.id}">${banksOpen.has(b.id) ? 'Ocultar' : 'Histórico'}</button>${b.id !== CASH ? ` <button class="btn btn-sm" data-bedit="${b.id}">Editar</button>` : ''}</td>
           </tr>
-          ${banksOpen.has(b.id) ? `<tr><td colspan="6" style="background:var(--bg-soft, #f6f4ef)">${state.bankBalances.filter(x => x.bankId === b.id).sort((p, q) => (p.date < q.date ? 1 : -1)).map(x => `<div data-balid="${x.id}" style="cursor:pointer;padding:3px 0">${fmtDate(x.date)} · <strong>${fmtMoney(x.amount)}</strong> ${x.note ? '· ' + escapeHtml(x.note) : ''}</div>`).join('') || '<span class="muted">Sin anotaciones todavía.</span>'}</td></tr>` : ''}`).join('')}
-        <tr><td><strong>Total disponible estimado</strong></td><td></td><td></td><td></td><td class="num"><strong>${fmtMoney(known)}</strong></td><td></td></tr>
+          ${banksOpen.has(b.id) ? `<tr><td colspan="8" style="background:var(--bg-soft, #f6f4ef)">${state.bankBalances.filter(x => x.bankId === b.id).sort((p, q) => (p.date < q.date ? 1 : -1)).map(x => `<div data-balid="${x.id}" style="cursor:pointer;padding:3px 0">${fmtDate(x.date)} · <strong>${fmtMoney(x.amount)}</strong> ${x.note ? '· ' + escapeHtml(x.note) : ''}</div>`).join('') || '<span class="muted">Sin anotaciones todavía.</span>'}</td></tr>` : ''}`).join('')}
+        <tr><td><strong>Total disponible estimado</strong></td><td></td><td></td><td></td><td></td><td></td><td class="num"><strong>${fmtMoney(known)}</strong></td><td></td></tr>
+      </tbody></table></div>
+      <div class="muted" style="margin-top:6px">Las transferencias (cobradas y pagadas) y los gastos sin banco indicado se asignan al banco principal. El saldo que anotas es siempre el que marca la cuenta en esa fecha.</div></div>
+    <div class="card"><h2>Remesas</h2><div class="table-wrap"><table>
+      <thead><tr><th>Fecha</th><th>Banco</th><th>Efectos</th><th>Importe total</th><th>Estado</th></tr></thead><tbody>
+        ${rems.length === 0 ? '<tr><td colspan="5" class="empty">Todavía no hay remesas. Se crean en la hoja Efectos y remesas, con «Remesar seleccionados».</td></tr>' : ''}
+        ${rems.map(g => `
+          <tr data-rem="${escapeHtml(g.key)}" style="cursor:pointer"><td class="mono">${fmtDate(g.date)}</td><td>${escapeHtml(g.bank)}</td><td class="num">${g.lines.length}</td><td class="num"><strong>${fmtMoney(g.lines.reduce((t, l) => t + Number(l.amount || 0), 0))}</strong></td><td>${remStatus(g)} <span class="muted">${remOpen.has(g.key) ? '▲' : '▼'}</span></td></tr>
+          ${remOpen.has(g.key) ? `<tr><td colspan="5" style="background:var(--bg-soft, #f6f4ef)"><table><thead><tr><th>Cliente</th><th>Nº fra.</th><th>Tipo</th><th>Vencimiento</th><th>Importe</th><th>Estado</th></tr></thead><tbody>${g.lines.map(l => `<tr><td>${escapeHtml(byId(state.clients, l.clientId)?.name || '—')}</td><td class="mono">${escapeHtml(l.invoiceNumber || '—')}</td><td>${escapeHtml(l.method || '')}</td><td class="mono">${fmtDate(l.dueDate)}</td><td class="num">${fmtMoney(l.amount)}</td><td>${l.collected ? 'Cobrado ' + fmtDate(l.collectedDate) : 'Pendiente'}</td></tr>`).join('')}</tbody></table></td></tr>` : ''}`).join('')}
+      </tbody></table></div></div>
+    <div class="card"><div class="topbar" style="margin-bottom:8px"><h2 style="margin:0">Traspasos entre cuentas</h2><button class="btn btn-primary" id="addTrans">+ Traspaso</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>De</th><th>A</th><th>Importe</th><th>Nota</th></tr></thead><tbody>
+        ${trans.length === 0 ? '<tr><td colspan="5" class="empty">Todavía no hay traspasos.</td></tr>' : ''}
+        ${trans.map(t => `<tr data-tr="${t.id}" style="cursor:pointer"><td class="mono">${fmtDate(t.date)}</td><td>${escapeHtml(bname(t.fromId))}</td><td>${escapeHtml(bname(t.toId))}</td><td class="num">${fmtMoney(t.amount)}</td><td class="muted">${escapeHtml(t.note || '')}</td></tr>`).join('')}
       </tbody></table></div></div>
     <div class="card"><div class="topbar" style="margin-bottom:8px"><h2 style="margin:0">Gastos puntuales</h2><button class="btn btn-primary" id="addOneOff">+ Gasto puntual</button></div>
       <div class="table-wrap"><table><thead><tr><th>Concepto</th><th>Vencimiento</th><th>Se paga por</th><th>Importe</th><th>Estado</th></tr></thead><tbody>
         ${oneOff.length === 0 ? '<tr><td colspan="5" class="empty">Todavía no hay gastos puntuales.</td></tr>' : ''}
-        ${oneOff.map(x => `<tr data-oo="${x.id}" style="cursor:pointer"><td>${escapeHtml(x.concept)}</td><td class="mono">${fmtDate(x.dueDate)}</td><td>${escapeHtml(bankOptions().find(o => o.value === (x.paidBank || x.bank || ''))?.label || '—')}</td><td class="num" style="color:var(--expense, #b3261e)">−${fmtMoney(x.amount)}</td><td>${x.paid ? 'Pagado ' + fmtDate(x.paidDate) : 'Pendiente'}</td></tr>`).join('')}
-      </tbody></table></div></div>`;
+        ${oneOff.map(x => `<tr data-oo="${x.id}" style="cursor:pointer"><td>${escapeHtml(x.concept)}</td><td class="mono">${fmtDate(x.dueDate)}</td><td>${escapeHtml(bname(defBank(x.paidBank || x.bank)))}</td><td class="num" style="color:var(--expense)">−${fmtMoney(x.amount)}</td><td>${x.paid ? 'Pagado ' + fmtDate(x.paidDate) : 'Pendiente'}</td></tr>`).join('')}
+      </tbody></table></div></div>
+    <div class="card"><div class="topbar" style="margin-bottom:8px"><h2 style="margin:0">Gastos fijos, préstamos, impuestos y nóminas configurados</h2><button class="btn btn-primary" id="addExpense">+ Gasto fijo</button></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Concepto</th><th>Categoría</th><th>Importe</th><th>Periodicidad</th><th>Próximo vencimiento</th><th>Banco</th><th>Préstamo</th></tr></thead>
+        <tbody>
+          ${state.fixedExpenses.length === 0 ? '<tr><td colspan="7" class="empty">Sin conceptos configurados.</td></tr>' : ''}
+          ${state.fixedExpenses.map(e => `
+            <tr data-fid="${e.id}" style="cursor:pointer"><td>${escapeHtml(e.concept)}</td>
+              <td><span class="pill pill-neutral">${EXPENSE_CATEGORIES.find(c => c.id === e.category)?.label || e.category}</span></td>
+              <td class="num">${e.autoIvaCalc ? 'Automático' : fmtMoney(e.amount)}</td>
+              <td class="muted">${FREQUENCIES.find(f => f.id === e.frequency)?.label || e.frequency}</td>
+              <td class="mono">${fmtDate(e.nextDate)}</td>
+              <td class="muted">${escapeHtml(bname(defBank(e.bank)))}</td>
+              <td class="muted">${escapeHtml(loanInfo(e))}</td></tr>`).join('')}
+        </tbody></table></div></div>`;
   document.getElementById('addBank').onclick = () => openEntityModal('bankAccount');
   document.getElementById('addBal').onclick = () => openEntityModal('bankBalance', null, { date: todayISO() });
+  document.getElementById('addTrans').onclick = () => openEntityModal('bankTransfer', null, { date: todayISO(), fromId: mainId });
   document.getElementById('addOneOff').onclick = () => openEntityModal('oneOffExpense');
+  document.getElementById('addExpense').onclick = () => openEntityModal('fixedExpense');
+  document.querySelectorAll('[data-main]').forEach(c => c.onchange = async () => {
+    for (const b of state.bankAccounts) { const want = c.checked && b.id === c.dataset.main; if (!!b.main !== want) await db.collection('bankAccounts').doc(b.id).update({ main: want }); }
+  });
   document.querySelectorAll('[data-bal]').forEach(b => b.onclick = () => openEntityModal('bankBalance', null, { bankId: b.dataset.bal, date: todayISO() }));
   document.querySelectorAll('[data-bedit]').forEach(b => b.onclick = () => openEntityModal('bankAccount', b.dataset.bedit));
   document.querySelectorAll('[data-hist]').forEach(b => b.onclick = () => { banksOpen.has(b.dataset.hist) ? banksOpen.delete(b.dataset.hist) : banksOpen.add(b.dataset.hist); renderBanks(); });
   document.querySelectorAll('[data-balid]').forEach(d => d.onclick = () => openEntityModal('bankBalance', d.dataset.balid));
+  document.querySelectorAll('[data-rem]').forEach(tr => tr.onclick = () => { const k = tr.dataset.rem; remOpen.has(k) ? remOpen.delete(k) : remOpen.add(k); renderBanks(); });
+  document.querySelectorAll('[data-tr]').forEach(tr => tr.onclick = () => openEntityModal('bankTransfer', tr.dataset.tr));
   document.querySelectorAll('[data-oo]').forEach(tr => tr.onclick = () => openEntityModal('oneOffExpense', tr.dataset.oo));
+  document.querySelectorAll('[data-fid]').forEach(tr => tr.onclick = () => openEntityModal('fixedExpense', tr.dataset.fid));
 }
 
 function renderSuppliers() {
@@ -1604,15 +1682,15 @@ function provisionItems(months) {
   const today = dayjs().startOf('day'), end = dayjs(months[months.length - 1] + '-01').endOf('month'), items = [];
   const cm = months[0];
   allOutLines().filter(l => !l.collected && EFFECT_METHODS.includes(l.method)).forEach(l => items.push({ date: l.dueDate || todayISO(), kind: 'in', cat: 'cobro', label: `${byId(state.clients, l.clientId)?.name || '—'} · ${l.invoiceNumber || ''} (${l.method})`, amount: Number(l.amount || 0), bank: '' }));
-  allInLines().filter(l => !l.paid).forEach(l => items.push({ date: l.dueDate || todayISO(), kind: 'out', cat: 'proveedor', label: `${byId(state.suppliers, l.supplierId)?.name || '—'} · ${l.invoiceNumber || ''} (${l.method})`, amount: Number(l.amount || 0), bank: '' }));
-  state.oneOffExpenses.filter(x => !x.paid).forEach(x => items.push({ date: x.dueDate || todayISO(), kind: 'out', cat: 'puntual', label: x.concept, amount: Number(x.amount || 0), bank: x.bank || '' }));
+  allInLines().filter(l => !l.paid).forEach(l => items.push({ date: l.dueDate || todayISO(), kind: 'out', cat: 'proveedor', label: `${byId(state.suppliers, l.supplierId)?.name || '—'} · ${l.invoiceNumber || ''} (${l.method})`, amount: Number(l.amount || 0), bank: l.method === 'Efectivo' ? CASH : (EFFECT_METHODS.includes(l.method) ? '' : mainBankId()) }));
+  state.oneOffExpenses.filter(x => !x.paid).forEach(x => items.push({ date: x.dueDate || todayISO(), kind: 'out', cat: 'puntual', label: x.concept, amount: Number(x.amount || 0), bank: defBank(x.bank) }));
   state.fixedExpenses.filter(e => !(e.category === 'impuesto' && e.autoIvaCalc)).forEach(e => {
     const cat = e.category || 'gasto', arr = expArrears(e, cm);
-    if (arr > 0.005) items.push({ date: dayjs(cm + '-01').subtract(1, 'day').format('YYYY-MM-DD'), kind: 'out', cat, label: `${e.concept} (atrasos)`, amount: arr, bank: e.bank || '' });
+    if (arr > 0.005) items.push({ date: dayjs(cm + '-01').subtract(1, 'day').format('YYYY-MM-DD'), kind: 'out', cat, label: `${e.concept} (atrasos)`, amount: arr, bank: defBank(e.bank) });
     months.forEach(m => {
       const pend = expenseMonthAmount(e, m) - expPaid(e.id, m); if (pend <= 0.005) return;
       const dim = dayjs(m + '-01').daysInMonth(), day = Math.min(dayjs(e.nextDate).isValid() ? dayjs(e.nextDate).date() : 1, dim);
-      items.push({ date: `${m}-${String(day).padStart(2, '0')}`, kind: 'out', cat, label: e.concept, amount: pend, bank: e.bank || '' });
+      items.push({ date: `${m}-${String(day).padStart(2, '0')}`, kind: 'out', cat, label: e.concept, amount: pend, bank: defBank(e.bank) });
     });
   });
   ivaQuarterItems(today, end).forEach(i => items.push(i));
@@ -1673,24 +1751,6 @@ function renderProvision() {
     <div class="card"><div class="month-nav"><span class="muted">Pagos de gastos fijos del mes:</span>
       <select id="monthSelect">${nextMonths(12).map(mm => `<option value="${mm}" ${mm === provisionMonth ? 'selected' : ''}>${monthLabel(mm)}</option>`).join('')}</select></div></div>
     ${fixedMonthCard(provisionMonth)}
-    <div class="card">
-      <h2>Gastos fijos, préstamos, impuestos y nóminas configurados</h2>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Concepto</th><th>Categoría</th><th>Importe</th><th>Periodicidad</th><th>Próximo vencimiento</th><th>Cuotas restantes</th></tr></thead>
-        <tbody>
-          ${state.fixedExpenses.length===0?'<tr><td colspan="6" class="empty">Sin conceptos configurados.</td></tr>':''}
-          ${state.fixedExpenses.map(e=>`
-            <tr data-id="${e.id}">
-              <td>${escapeHtml(e.concept)}</td>
-              <td><span class="pill pill-neutral">${EXPENSE_CATEGORIES.find(c=>c.id===e.category)?.label||e.category}</span></td>
-              <td class="num">${e.autoIvaCalc?'Automático':fmtMoney(e.amount)}</td>
-              <td class="muted">${FREQUENCIES.find(f=>f.id===e.frequency)?.label||e.frequency}</td>
-              <td class="mono">${fmtDate(e.nextDate)}</td>
-              <td class="num">${e.installmentsRemaining||'—'}</td>
-            </tr>`).join('')}
-        </tbody>
-      </table></div>
-    </div>
   `;
   document.getElementById('addExpense').onclick = () => openEntityModal('fixedExpense');
   document.getElementById('addOneOff2').onclick = () => openEntityModal('oneOffExpense');
@@ -1699,7 +1759,6 @@ function renderProvision() {
   document.getElementById('monthSelect').onchange = (e) => { provisionMonth = e.target.value; render(); };
   document.querySelectorAll('[data-payexp]').forEach(b => b.onclick = () => openEntityModal('expensePayment', null, { expenseId: b.dataset.payexp, month: b.dataset.m, amount: Number(b.dataset.pend), date: todayISO(), bank: byId(state.fixedExpenses, b.dataset.payexp)?.bank || '' }));
   document.querySelectorAll('[data-pid]').forEach(tr => tr.onclick = () => openEntityModal('expensePayment', tr.dataset.pid));
-  document.querySelectorAll('#main tbody tr[data-id]').forEach(tr => tr.onclick = () => openEntityModal('fixedExpense', tr.dataset.id));
 }
 
 // ---------- EFFECTS ----------
@@ -1746,7 +1805,7 @@ function renderEffects() {
   if (effectsTab === 'pendientes') {
     body = `
     <div class="card">
-      <div class="card-head"><h2>A remesar la próxima semana</h2>${toRemit.length?`<button class="btn btn-sm btn-primary" id="bulkRemit" disabled>Remesar seleccionados</button>`:''}</div>
+      <div class="card-head"><h2>A remesar la próxima semana</h2>${toRemit.length?`<span><select id="remitBank"><option value="">Banco de la remesa…</option>${bankOptions(false).filter(o=>o.value!==CASH).map(o=>`<option value="${o.value}">${escapeHtml(o.label)}</option>`).join('')}</select> <button class="btn btn-sm btn-primary" id="bulkRemit" disabled>Remesar seleccionados</button></span>`:''}</div>
       ${toRemit.length===0?'<div class="empty">No hay efectos pendientes de remesar en los próximos 7 días.</div>':`
       <div class="table-wrap"><table>
         <thead><tr><th class="checkcol"></th><th>Cliente</th><th>Nº fra.</th><th>Vencimiento</th><th>Banco emisor</th><th>Importe</th></tr></thead>
@@ -1798,16 +1857,19 @@ function renderEffects() {
       chk.checked = effectsSelected.has(chk.dataset.selid);
       chk.onchange = () => {
         if (chk.checked) effectsSelected.add(chk.dataset.selid); else effectsSelected.delete(chk.dataset.selid);
-        if (bulkBtn) bulkBtn.disabled = effectsSelected.size === 0;
+        if (bulkBtn) bulkBtn.disabled = effectsSelected.size === 0 || !document.getElementById('remitBank').value;
       };
     });
     if (bulkBtn) {
-      bulkBtn.disabled = effectsSelected.size === 0;
+      const selBank = document.getElementById('remitBank');
+      const sync = () => { bulkBtn.disabled = effectsSelected.size === 0 || !selBank.value; };
+      selBank.onchange = sync; sync();
       bulkBtn.onclick = async () => {
-        const keys = Array.from(effectsSelected);
+        const keys = Array.from(effectsSelected), rid = 'rem' + Date.now().toString(36);
+        const bankName = state.bankAccounts.find(b => b.id === selBank.value)?.name || '';
         for (const key of keys) {
           const line = toRemit.find(l => l.key === key);
-          if (line) await applyLineUpdate(line, { remesado: true, remittanceDate: todayISO() });
+          if (line) await applyLineUpdate(line, { remesado: true, remittanceDate: todayISO(), remittanceId: rid, remittanceBankId: selBank.value, remittanceBank: bankName });
         }
         effectsSelected = new Set();
         showToast(`${keys.length} efecto(s) marcados como remesados`);
@@ -1970,6 +2032,16 @@ const ENTITY_CONFIG = {
       { key:'note', label:'Nota (opcional)', type:'text' },
     ]
   },
+  bankTransfer: {
+    title: 'Traspaso entre cuentas', col: 'bankTransfers',
+    fields: [
+      { key:'fromId', label:'Sale de', type:'select', options: () => bankOptions(false), required:true },
+      { key:'toId', label:'Entra en', type:'select', options: () => bankOptions(false), required:true },
+      { key:'date', label:'Fecha', type:'date', required:true },
+      { key:'amount', label:'Importe (€)', type:'number', required:true },
+      { key:'note', label:'Nota (opcional)', type:'text' },
+    ]
+  },
   oneOffExpense: {
     title: 'Gasto puntual', col: 'oneOffExpenses',
     fields: [
@@ -2002,7 +2074,7 @@ const ENTITY_CONFIG = {
       { key:'bank', label:'Banco de pago habitual', type:'select', options: () => bankOptions() },
       { key:'frequency', label:'Periodicidad', type:'select', options: FREQUENCIES.map(f=>({value:f.id,label:f.label})) },
       { key:'nextDate', label:'Próximo vencimiento', type:'date' },
-      { key:'installmentsRemaining', label:'Cuotas restantes (solo préstamos)', type:'number', showIf: d => d.category === 'prestamo' },
+      { key:'lastDate', label:'Fecha del último plazo (solo préstamos)', type:'date', showIf: d => d.category === 'prestamo' },
       { key:'notes', label:'Notas', type:'textarea' },
     ]
   },
