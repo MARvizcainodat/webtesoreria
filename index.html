@@ -200,6 +200,13 @@
   select, input[type=month], input[type=date] { max-width: 100%; }
   #negEffect, #negBank, #remitBank { width: 100%; max-width: 100%; text-overflow: ellipsis; }
   #negEffect, #negBank { min-width: 0; }
+  /* Resumen en el ordenador: clientes en la fila de arriba y proveedores en la de abajo, con tarjetas más grandes (el móvil conserva su diseño) */
+  @media (min-width: 761px) and (pointer: fine), (min-width: 1281px) {
+    .kpi-res { grid-template-columns: repeat(3, 1fr); grid-auto-flow: row; gap: 16px; }
+    .kpi-res .kpi { padding: 20px 22px; }
+    .kpi-res .kpi .label { font-size: 13px; }
+    .kpi-res .kpi .value { font-size: 28px; margin-top: 8px; }
+  }
 </style>
 </head>
 <body>
@@ -1148,13 +1155,20 @@ function renderDashboard() {
   const alerts = [];
   allOutLines().filter(l=>!l.collected).forEach(l => {
     const d = daysUntil(l.dueDate);
-    if (d <= 15) alerts.push({ kind: d<0?'expense':'warn', text: `${byId(state.clients,l.clientId)?.name || 'Cliente'} · Fra. ${l.invoiceNumber||''}`, sub: d<0?`Vencida hace ${-d} días`:`Vence en ${d} días`, amt: l.amount, type:'in' });
+    if (d <= 15) alerts.push({ kind: d<0?'expense':'warn', days: d, overdue: d<0, text: `${byId(state.clients,l.clientId)?.name || 'Cliente'} · Fra. ${l.invoiceNumber||''}`, sub: d<0?`Vencida hace ${-d} días`:(d===0?'Vence hoy':`Vence en ${d} días`), amt: l.amount, type:'in' });
   });
   allInLines().filter(l=>!l.paid).forEach(l => {
     const d = daysUntil(l.dueDate);
-    if (d <= 15) alerts.push({ kind: d<0?'expense':'warn', text: `${byId(state.suppliers,l.supplierId)?.name || 'Proveedor'} · Fra. ${l.invoiceNumber||''}`, sub: d<0?`Vencida hace ${-d} días`:`Vence en ${d} días`, amt: -l.amount, type:'out' });
+    if (d <= 15) alerts.push({ kind: d<0?'expense':'warn', days: d, overdue: d<0, text: `${byId(state.suppliers,l.supplierId)?.name || 'Proveedor'} · Fra. ${l.invoiceNumber||''}`, sub: d<0?`Vencida hace ${-d} días`:(d===0?'Vence hoy':`Vence en ${d} días`), amt: -l.amount, type:'out' });
   });
 
+  const upcoming = alerts.filter(a => !a.overdue).sort((a, b) => a.days - b.days), overdue = alerts.filter(a => a.overdue).sort((a, b) => a.days - b.days);
+  const alertRow = a => `
+              <div class="alert-item">
+                <span class="alert-dot" style="background:var(--${a.kind==='expense'?'expense':'warn'})"></span>
+                <div><div>${escapeHtml(a.text)}</div><div class="muted" style="font-size:11.5px">${a.sub}</div></div>
+                <span class="amt ${a.type==='in'?'':'expense'}">${a.type==='in'?'+':''}${fmtMoney(a.amt)}</span>
+              </div>`;
   const months = nextMonths(6);
   const provRows = buildProvision(months);
   const maxAbs = Math.max(1, ...months.map(m => Math.max(Math.abs(provRows.ingresos[m]), Math.abs(provRows.totalPagos[m]))));
@@ -1164,7 +1178,7 @@ function renderDashboard() {
 
     ${criticalWorks.length ? `<div class="banner-critical">⚠ ${criticalWorks.length} obra(s) con el coste de proveedores por encima del presupuesto: ${criticalWorks.map(w=>escapeHtml(w.name)).join(', ')}. Revisa la sección Obras.</div>` : ''}
 
-    <div class="kpi-row">
+    <div class="kpi-row kpi-res">
       <div class="kpi"><div class="label">Facturado a clientes</div><div class="value">${fmtMoney(totalFacturadoCli)}</div></div>
       <div class="kpi"><div class="label">Cobrado</div><div class="value income">${fmtMoney(totalCobrado)}</div></div>
       <div class="kpi"><div class="label">Pendiente de cobro</div><div class="value">${fmtMoney(pendienteCobro)}</div></div>
@@ -1176,45 +1190,37 @@ function renderDashboard() {
     <div class="split">
       <div>
         <div class="card">
-          <h2>Avisos (próximos 15 días)</h2>
+          <h2>Avisos (próximos 15 días) <span class="muted" style="font-size:12px;font-weight:400">· ${upcoming.length} vencimientos</span></h2>
           ${criticalWorks.map(w=>`<div class="alert-item critical"><span class="alert-dot" style="background:var(--critical)"></span><div><div><strong>Sobrecoste en "${escapeHtml(w.name)}"</strong></div><div style="font-size:11.5px">Coste proveedores ${fmtMoney(workCost(w.id))} supera el presupuesto ${fmtMoney(workBudgetTotal(w.id))}</div></div></div>`).join('')}
-          ${alerts.length === 0 ? '<div class="empty">No hay vencimientos próximos.</div>' :
-            alerts.sort((a,b)=>(a.kind==='expense'?-1:0)-(b.kind==='expense'?-1:0)).slice(0,12).map(a => `
-              <div class="alert-item">
-                <span class="alert-dot" style="background:var(--${a.kind==='expense'?'expense':'warn'})"></span>
-                <div><div>${escapeHtml(a.text)}</div><div class="muted" style="font-size:11.5px">${a.sub}</div></div>
-                <span class="amt ${a.type==='in'?'':'expense'}">${a.type==='in'?'+':''}${fmtMoney(a.amt)}</span>
-              </div>`).join('')}
+          <div style="max-height:560px;overflow:auto">${upcoming.length === 0 ? '<div class="empty">No hay vencimientos en los próximos 15 días.</div>' : upcoming.map(alertRow).join('')}</div>
+          ${overdue.length ? `<details style="margin-top:12px"><summary style="cursor:pointer;font-weight:600">⚠ ${overdue.length} vencidos sin cobrar o pagar · por cobrar ${fmtMoney(overdue.filter(a=>a.type==='in').reduce((t,a)=>t+a.amt,0))} · por pagar ${fmtMoney(-overdue.filter(a=>a.type==='out').reduce((t,a)=>t+a.amt,0))}</summary><div class="muted" style="margin:4px 0">Normalmente son pagos o cobros que faltan por anotar. Se marcan en Control de efectos.</div><div style="max-height:360px;overflow:auto">${overdue.map(alertRow).join('')}</div></details>` : ''}
         </div>
       </div>
       <div>
-        <div class="card">
-          <h2>Provisión — próximos 6 meses</h2>
-          <div class="table-wrap">
-          <svg viewBox="0 0 640 190" width="100%" style="overflow:visible">
-            ${months.map((m,i)=>{
-              const x = 20 + i*104; const barW = 34;
-              const hIn = (Math.abs(provRows.ingresos[m])/maxAbs)*70;
-              const hOut = (Math.abs(provRows.totalPagos[m])/maxAbs)*70;
-              const baseY = 110;
-              return `
-                <rect x="${x}" y="${baseY-hIn}" width="${barW}" height="${hIn}" fill="var(--income)" rx="2"></rect>
-                <rect x="${x+barW+4}" y="${baseY-hOut}" width="${barW}" height="${hOut}" fill="var(--expense)" rx="2"></rect>
-                <text x="${x+barW+4}" y="${baseY+18}" font-size="10.5" fill="var(--ink-soft)" font-family="Inter" text-anchor="middle">${monthLabel(m).slice(0,3)}</text>
-                <text x="${x+barW+4}" y="${baseY+32}" font-size="10" fill="${provRows.net[m]>=0?'var(--income)':'var(--expense)'}" font-family="IBM Plex Mono" text-anchor="middle">${provRows.net[m]>=0?'+':''}${Math.round(provRows.net[m]/100)/10}k</text>
-              `;
-            }).join('')}
-            <line x1="10" y1="110" x2="630" y2="110" stroke="var(--border-strong)" stroke-width="1"></line>
-          </svg>
-          </div>
-          <div class="field-hint" style="margin-top:8px"><span style="color:var(--income)">■</span> Ingresos previstos &nbsp; <span style="color:var(--expense)">■</span> Pagos previstos</div>
-        </div>
+        ${expectedCardHtml(months)}
       </div>
     </div>
   `;
 }
 
 // ---------- CLIENTS ----------
+/* ---------- BUSCADOR (en cualquier parte del texto, sin mayúsculas ni tildes, varias palabras) ---------- */
+const qState = { clients: '', suppliers: '', works: '' };
+const normS = t => stripAcc(t).replace(/\s+/g, ' ').trim();
+function matchSearch(hay, q) { const words = normS(q).split(' ').filter(Boolean); if (!words.length) return true; const h = normS(hay); return words.every(w => h.includes(w)); }
+const searchBar = (id, ph) => `<div style="margin-bottom:10px"><input type="search" id="${id}" placeholder="${ph}" autocomplete="off" style="width:100%;max-width:560px;padding:10px 12px;border:1px solid var(--border-strong);border-radius:var(--radius);font-size:14px;background:var(--bg);color:var(--ink)"> <span class="muted" id="${id}Count" style="margin-left:8px"></span></div>`;
+function setupListSearch(key, inputId, items, hayFn, codeFn, nameFn, rowFn, onRow, colspan) {
+  const input = document.getElementById(inputId), cnt = document.getElementById(inputId + 'Count'), tb = document.querySelector('#' + inputId + 'Table tbody');
+  const paint = () => {
+    const q = input.value; qState[key] = q; const nq = normS(q);
+    let list = items.filter(it => matchSearch(hayFn(it), q));
+    if (nq) list = list.map(it => [String(codeFn(it) || '').trim() === nq ? 0 : normS(nameFn(it)).startsWith(nq) ? 1 : 2, it]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
+    tb.innerHTML = list.length ? list.map(rowFn).join('') : `<tr><td colspan="${colspan}" class="empty">Nada coincide con «${escapeHtml(q)}».</td></tr>`;
+    cnt.textContent = nq ? `${list.length} de ${items.length}` : `${items.length}`;
+    tb.querySelectorAll('tr[data-id]').forEach(tr => tr.onclick = () => onRow(tr.dataset.id));
+  };
+  input.value = qState[key]; input.oninput = paint; input.onkeydown = e => { if (e.key === 'Escape') { input.value = ''; paint(); } }; paint();
+}
 function renderClients() {
   const rows = state.clients.map(c => {
     const invs = state.invoicesOut.filter(i=>i.clientId===c.id);
@@ -1223,23 +1229,17 @@ function renderClients() {
     return { c, facturado, pendiente };
   });
   document.getElementById('main').innerHTML = `
-    <div class="topbar"><div><h1>Clientes</h1><div class="subtitle">${state.clients.length} clientes</div></div>
+    <div class="topbar"><div><h1>Clientes</h1><div class="subtitle">Busca por nombre, código, CIF, contacto, teléfono o email</div></div>
       <button class="btn btn-primary" id="addClient">+ Nuevo cliente</button></div>
-    <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>Cliente</th><th>Facturado</th><th>Pendiente de cobro</th></tr></thead>
-      <tbody>
-        ${rows.length===0?'<tr><td colspan="3" class="empty">Todavía no hay clientes.</td></tr>':''}
-        ${rows.map(r=>`
-          <tr data-id="${r.c.id}">
-            <td>${escapeHtml(r.c.name)}</td>
-            <td class="num">${fmtMoney(r.facturado)}</td>
-            <td class="num" style="${r.pendiente>0?'color:var(--warn)':''}">${fmtMoney(r.pendiente)}</td>
-          </tr>`).join('')}
-      </tbody>
+    <div class="card">${searchBar('qCli', 'Buscar cliente: escribe cualquier parte del nombre o el código…')}<div class="table-wrap"><table id="qCliTable">
+      <thead><tr><th>Cód.</th><th>Cliente</th><th>Facturado</th><th>Pendiente de cobro</th></tr></thead>
+      <tbody></tbody>
     </table></div></div>
   `;
   document.getElementById('addClient').onclick = () => openEntityModal('client');
-  document.querySelectorAll('#main tbody tr[data-id]').forEach(tr => tr.onclick = () => { currentDetail = {type:'client', id: tr.dataset.id}; render(); });
+  setupListSearch('clients', 'qCli', rows, r => [r.c.name, r.c.code, r.c.cif, r.c.contactName, r.c.phone, r.c.email].join(' '), r => r.c.code, r => r.c.name,
+    r => `<tr data-id="${r.c.id}" style="cursor:pointer"><td class="mono muted">${escapeHtml(r.c.code||'')}</td><td>${escapeHtml(r.c.name)}</td><td class="num">${fmtMoney(r.facturado)}</td><td class="num" style="${r.pendiente>0?'color:var(--warn)':''}">${fmtMoney(r.pendiente)}</td></tr>`,
+    id => { currentDetail = {type:'client', id}; render(); }, 4);
 }
 
 function renderClientDetail(id) {
@@ -1258,6 +1258,8 @@ function renderClientDetail(id) {
     <div class="split">
       <div class="card contact-card">
         <h2>Ficha</h2>
+        <div class="field"><div class="k">Plazo de pago</div><div class="v">${num(c.paymentTermDays)>0?num(c.paymentTermDays)+' días':PROV_TERM+' días <span class="muted">(provisional, sin revisar)</span>'}</div></div>
+        <div class="field"><div class="k">Código de cliente</div><div class="v mono">${escapeHtml(c.code||'—')}</div></div>
         <div class="field"><div class="k">CIF</div><div class="v mono">${escapeHtml(c.cif||'—')}</div></div>
         <div class="field"><div class="k">Persona de contacto</div><div class="v">${escapeHtml(c.contactName||'—')}</div></div>
         <div class="field"><div class="k">Teléfono</div><div class="v mono">${escapeHtml(c.phone||'—')}</div></div>
@@ -1721,23 +1723,17 @@ function renderSuppliers() {
     return { s, facturado, pendiente };
   });
   document.getElementById('main').innerHTML = `
-    <div class="topbar"><div><h1>Proveedores y acreedores</h1><div class="subtitle">${state.suppliers.length} proveedores</div></div>
+    <div class="topbar"><div><h1>Proveedores y acreedores</h1><div class="subtitle">Busca por nombre, código, CIF, contacto, teléfono o email</div></div>
       <button class="btn btn-primary" id="addSupplier">+ Nuevo proveedor</button></div>
-    <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>Proveedor</th><th>Facturado</th><th>Pendiente de pago</th></tr></thead>
-      <tbody>
-        ${rows.length===0?'<tr><td colspan="3" class="empty">Todavía no hay proveedores.</td></tr>':''}
-        ${rows.map(r=>`
-          <tr data-id="${r.s.id}">
-            <td>${escapeHtml(r.s.name)}</td>
-            <td class="num">${fmtMoney(r.facturado)}</td>
-            <td class="num" style="${r.pendiente>0?'color:var(--warn)':''}">${fmtMoney(r.pendiente)}</td>
-          </tr>`).join('')}
-      </tbody>
+    <div class="card">${searchBar('qSup', 'Buscar proveedor: escribe cualquier parte del nombre o el código…')}<div class="table-wrap"><table id="qSupTable">
+      <thead><tr><th>Cód.</th><th>Proveedor</th><th>Facturado</th><th>Pendiente de pago</th></tr></thead>
+      <tbody></tbody>
     </table></div></div>
   `;
   document.getElementById('addSupplier').onclick = () => openEntityModal('supplier');
-  document.querySelectorAll('#main tbody tr[data-id]').forEach(tr => tr.onclick = () => { currentDetail = {type:'supplier', id: tr.dataset.id}; render(); });
+  setupListSearch('suppliers', 'qSup', rows, r => [r.s.name, r.s.code, r.s.cif, r.s.contactName, r.s.phone, r.s.email].join(' '), r => r.s.code, r => r.s.name,
+    r => `<tr data-id="${r.s.id}" style="cursor:pointer"><td class="mono muted">${escapeHtml(r.s.code||'')}</td><td>${escapeHtml(r.s.name)}</td><td class="num">${fmtMoney(r.facturado)}</td><td class="num" style="${r.pendiente>0?'color:var(--warn)':''}">${fmtMoney(r.pendiente)}</td></tr>`,
+    id => { currentDetail = {type:'supplier', id}; render(); }, 4);
 }
 
 function renderSupplierDetail(id) {
@@ -1757,6 +1753,8 @@ function renderSupplierDetail(id) {
     <div class="split">
       <div class="card contact-card">
         <h2>Ficha</h2>
+        <div class="field"><div class="k">Plazo de pago</div><div class="v">${num(s.paymentTermDays)>0?num(s.paymentTermDays)+' días':PROV_TERM+' días <span class="muted">(provisional, sin revisar)</span>'}</div></div>
+        <div class="field"><div class="k">Código de proveedor</div><div class="v mono">${escapeHtml(s.code||'—')}</div></div>
         <div class="field"><div class="k">CIF</div><div class="v mono">${escapeHtml(s.cif||'—')}</div></div>
         <div class="field"><div class="k">Persona de contacto</div><div class="v">${escapeHtml(s.contactName||'—')}</div></div>
         <div class="field"><div class="k">Teléfono</div><div class="v mono">${escapeHtml(s.phone||'—')}</div></div>
@@ -1822,21 +1820,9 @@ function renderWorks() {
   document.getElementById('main').innerHTML = `
     <div class="topbar"><div><h1>Obras</h1><div class="subtitle">Presupuesto, facturación y coste de proveedores por obra</div></div>
       <button class="btn btn-primary" id="addWork">+ Nueva obra</button></div>
-    <div class="card"><div class="table-wrap"><table>
+    <div class="card">${searchBar('qWork', 'Buscar obra: nombre, cliente, dirección, encargado…')}<div class="table-wrap"><table id="qWorkTable">
       <thead><tr><th>Obra</th><th>Cliente</th><th>Estado</th><th>Presupuesto</th><th>Facturado</th><th>Coste proveedores</th><th>Beneficio</th></tr></thead>
-      <tbody>
-        ${rows.length===0?'<tr><td colspan="7" class="empty">Todavía no hay obras.</td></tr>':''}
-        ${rows.map(r=>`
-          <tr data-id="${r.w.id}">
-            <td>${escapeHtml(r.w.name)}${r.over?' <span class="pill pill-critical">Sobrecoste</span>':''}</td>
-            <td class="muted">${escapeHtml(byId(state.clients,r.w.clientId)?.name||'—')}</td>
-            <td><span class="pill pill-info">${escapeHtml(r.w.status)}</span></td>
-            <td class="num">${fmtMoney(r.budget)}</td>
-            <td class="num">${fmtMoney(r.facturado)}</td>
-            <td class="num" style="${r.over?'color:var(--critical);font-weight:700':''}">${fmtMoney(r.coste)}</td>
-            <td class="num" style="color:${r.beneficio>=0?'var(--income)':'var(--expense)'}">${fmtMoney(r.beneficio)}</td>
-          </tr>`).join('')}
-      </tbody>
+      <tbody></tbody>
     </table></div></div>
     <div class="card"><div class="topbar" style="margin-bottom:8px"><div><h2 style="margin:0">Glosario de piezas</h2><div class="muted">Para reconocer una misma pieza por sus distintos nombres, y saber cómo se suele cobrar</div></div><div>${state.materialGlossary.length === 0 ? '<button class="btn" id="seedGloss">Cargar glosario inicial</button> ' : ''}<button class="btn btn-primary" id="addGloss">+ Pieza</button></div></div>
       <div class="table-wrap"><table><thead><tr><th>Pieza</th><th>Otros nombres</th><th>Se suele cobrar por</th><th>Grosor estándar</th><th>Medidas estándar</th></tr></thead><tbody>
@@ -1848,7 +1834,9 @@ function renderWorks() {
   const seed = document.getElementById('seedGloss'); if (seed) seed.onclick = async () => { for (const g of GLOSSARY_START) await db.collection('materialGlossary').add(g); showToast('Glosario inicial cargado: revísalo y corrígelo'); };
   document.querySelectorAll('[data-gid]').forEach(tr => tr.onclick = () => openEntityModal('glossaryItem', tr.dataset.gid));
   document.getElementById('addWork').onclick = () => openEntityModal('work');
-  document.querySelectorAll('#main tbody tr[data-id]').forEach(tr => tr.onclick = () => { currentDetail = {type:'work', id: tr.dataset.id}; render(); });
+  setupListSearch('works', 'qWork', rows, r => [r.w.name, byId(state.clients, r.w.clientId)?.name, r.w.address, r.w.notes, r.w.foremanName, r.w.status].join(' '), r => '', r => r.w.name,
+    r => `<tr data-id="${r.w.id}" style="cursor:pointer"><td>${escapeHtml(r.w.name)}${r.over?' <span class="pill pill-critical">Sobrecoste</span>':''}</td><td class="muted">${escapeHtml(byId(state.clients,r.w.clientId)?.name||'—')}</td><td>${r.w.status?`<span class="pill pill-info">${escapeHtml(r.w.status)}</span>`:'<span class="muted">—</span>'}</td><td class="num">${fmtMoney(r.budget)}</td><td class="num">${fmtMoney(r.facturado)}</td><td class="num" style="${r.over?'color:var(--critical);font-weight:700':''}">${fmtMoney(r.coste)}</td><td class="num" style="color:${r.beneficio>=0?'var(--income)':'var(--expense)'}">${fmtMoney(r.beneficio)}</td></tr>`,
+    id => { currentDetail = {type:'work', id}; render(); }, 7);
 }
 
 function renderWorkDetail(id) {
@@ -1907,6 +1895,60 @@ function renderWorkDetail(id) {
 }
 
 // ---------- PROVISION ----------
+/* ---------- PREVISIÓN SEGÚN PLAZOS PACTADOS (Resumen) ---------- */
+const PROV_TERM = 120; /* plazo provisional para clientes y proveedores que no tienen plazo indicado */
+function expectedDate(l, isOut) {
+  if (isoOk(l.dueDate)) return { date: l.dueDate, prov: false };
+  const inv = byId(isOut ? state.invoicesOut : state.invoicesIn, l.invoiceId);
+  const base = isoOk(l.date) ? l.date : (inv && isoOk(inv.date) ? inv.date : '');
+  if (!base) return { date: '', prov: true, none: true };
+  const party = isOut ? byId(state.clients, l.clientId || (inv && inv.clientId)) : byId(state.suppliers, l.supplierId || (inv && inv.supplierId));
+  const term = num(party && party.paymentTermDays);
+  if (term > 0) return { date: dayjs(base).add(term, 'day').format('YYYY-MM-DD'), prov: false };
+  return { date: dayjs(base).add(PROV_TERM, 'day').format('YYYY-MM-DD'), prov: true };
+}
+function expectedFlows(months) {
+  const today = todayISO(), end = dayjs(months[months.length - 1] + '-01').endOf('month').format('YYYY-MM-DD');
+  const cols = ['venc', ...months], B = {}; cols.forEach(k => B[k] = { cf: 0, cp: 0, pf: 0, pp: 0 });
+  const info = { nCp: 0, aCp: 0, nPp: 0, aPp: 0, sinFecha: 0, sinFechaA: 0 };
+  const put = (e, amt, kind, line) => {
+    if (e.none) { info.sinFecha++; info.sinFechaA += amt; return; }
+    if (e.date > end) return;
+    const k = e.date < today ? 'venc' : e.date.slice(0, 7);
+    if (!B[k]) return;
+    if (kind === 'c') { if (e.prov) { B[k].cp += amt; info.nCp++; info.aCp += amt; } else B[k].cf += amt; }
+    else { if (e.prov) { B[k].pp += amt; info.nPp++; info.aPp += amt; } else B[k].pf += amt; }
+  };
+  allOutLines().filter(l => !l.collected).forEach(l => put(expectedDate(l, true), num(l.amount), 'c'));
+  allInLines().filter(l => !l.paid).forEach(l => put(expectedDate(l, false), num(l.amount), 'p'));
+  provisionItems(months).filter(i => i.kind === 'out' && i.cat !== 'proveedor').forEach(i => { const k = i.overdue ? 'venc' : i.date.slice(0, 7); if (B[k]) B[k].pf += i.amount; });
+  return { cols, B, info };
+}
+function expectedCardHtml(months) {
+  const { cols, B, info } = expectedFlows(months);
+  const tot = k => ({ c: B[k].cf + B[k].cp, p: B[k].pf + B[k].pp });
+  const max = Math.max(1, ...cols.map(k => Math.max(tot(k).c, tot(k).p)));
+  const w = 700, h = 230, base = 168, gw = w / cols.length, bw = 30, H = 120;
+  const bar = (x, firm, prov, col, hat, tip) => { const hf = firm / max * H, hp = prov / max * H; return `<g><title>${escapeHtml(tip)}</title><rect x="${x}" y="${base - hf}" width="${bw}" height="${hf}" fill="${col}" rx="2"/><rect x="${x}" y="${base - hf - hp}" width="${bw}" height="${hp}" fill="url(#${hat})" stroke="${col}" stroke-width="1" rx="2"/></g>`; };
+  let acc = 0;
+  const groups = cols.map((k, i) => { const t = tot(k), net = t.c - t.p; acc += net; const x = i * gw + (gw - bw * 2 - 6) / 2, lab = k === 'venc' ? 'Vencido' : monthLabel(k).slice(0, 3);
+    return bar(x, B[k].cf, B[k].cp, 'var(--income)', 'hG', `${k === 'venc' ? 'Vencido' : monthLabel(k)} · cobros ${fmtMoney(t.c)} (${fmtMoney(B[k].cp)} con fecha provisional)`)
+      + bar(x + bw + 6, B[k].pf, B[k].pp, 'var(--expense)', 'hR', `${k === 'venc' ? 'Vencido' : monthLabel(k)} · pagos ${fmtMoney(t.p)} (${fmtMoney(B[k].pp)} con fecha provisional)`)
+      + `<text x="${x + bw + 3}" y="${base + 16}" font-size="10.5" fill="var(--ink-soft)" text-anchor="middle">${lab}</text><text x="${x + bw + 3}" y="${base + 31}" font-size="10" fill="${net >= 0 ? 'var(--income)' : 'var(--expense)'}" text-anchor="middle">${net >= 0 ? '+' : ''}${fmtK(net)}</text><text x="${x + bw + 3}" y="${base + 45}" font-size="9.5" fill="var(--ink-faint)" text-anchor="middle">acum. ${fmtK(acc)}</text>`; }).join('');
+  const sum = cols.reduce((a, k) => ({ c: a.c + tot(k).c, p: a.p + tot(k).p }), { c: 0, p: 0 });
+  return `<div class="card">
+    <h2>Previsión a 6 meses según plazos pactados</h2>
+    <div class="muted" style="margin-bottom:6px">Todo lo que se espera cobrar y pagar <strong>si todos cumplen</strong>, en su fecha. Es distinto de Provisión, que solo cuenta lo asegurado y el dinero que hay.</div>
+    <div class="table-wrap"><svg viewBox="0 0 ${w} ${h}" width="100%" style="overflow:visible"><defs>
+      <pattern id="hG" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#fff"/><rect width="2.5" height="6" fill="var(--income)" opacity=".75"/></pattern>
+      <pattern id="hR" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#fff"/><rect width="2.5" height="6" fill="var(--expense)" opacity=".75"/></pattern></defs>
+      <line x1="0" y1="${base}" x2="${w}" y2="${base}" stroke="var(--border-strong)"/>${groups}</svg></div>
+    <div class="field-hint" style="margin-top:6px"><span style="color:var(--income)">■</span> Cobros esperados &nbsp; <span style="color:var(--expense)">■</span> Pagos esperados (proveedores, gastos fijos, puntuales e IVA) &nbsp; <b>Rayado = fecha provisional</b></div>
+    <div style="margin-top:6px"><strong>Total 6 meses (con lo vencido): cobros ${fmtMoney(sum.c)} · pagos ${fmtMoney(sum.p)} · neto <span style="color:${sum.c - sum.p >= 0 ? 'var(--income)' : 'var(--expense)'}">${fmtMoney(sum.c - sum.p)}</span></strong></div>
+    ${(info.nCp + info.nPp) ? `<div style="margin-top:6px;padding:8px 10px;border-radius:6px;background:#fff6dd;color:#7a5b00;font-size:12.5px"><b>Fechas provisionales sin revisar:</b> ${info.nCp} cobros (${fmtMoney(info.aCp)}) y ${info.nPp} pagos (${fmtMoney(info.aPp)}) no tienen vencimiento ni plazo en su cliente o proveedor, y se han colocado a ${PROV_TERM} días desde la factura. Indica el plazo de pago en la ficha de cada cliente o proveedor y dejarán de ser provisionales.</div>` : ''}
+    ${info.sinFecha ? `<div class="muted" style="margin-top:4px">${info.sinFecha} cobros o pagos (${fmtMoney(info.sinFechaA)}) no tienen fecha de factura y no se pueden situar.</div>` : ''}
+  </div>`;
+}
 function buildProvision(months) {
   const rows = { gasto:{}, prestamo:{}, impuesto:{}, nomina:{}, proveedores:{}, ingresos:{}, totalPagos:{}, net:{} };
   months.forEach(m => {
@@ -2238,10 +2280,12 @@ const ENTITY_CONFIG = {
     title: 'Cliente', col: 'clients',
     fields: [
       { key:'name', label:'Nombre / razón social', type:'text', required:true },
+      { key:'code', label:'Código de cliente (3 últimos dígitos de la cuenta 430…)', type:'text' },
       { key:'cif', label:'CIF/NIF', type:'text' },
       { key:'contactName', label:'Persona de contacto', type:'text' },
       { key:'phone', label:'Teléfono', type:'text' },
       { key:'email', label:'Email', type:'text' },
+      { key:'address', label:'Dirección postal (se guarda, pero no se muestra en la ficha)', type:'textarea' },
       { key:'paymentMethod', label:'Forma de pago habitual', type:'select', options: PAYMENT_METHODS },
       { key:'paymentTermDays', label:'Plazo de pago habitual (días)', type:'number' },
       { key:'platformName', label:'Plataforma de facturación (si la usa)', type:'text' },
@@ -2252,6 +2296,7 @@ const ENTITY_CONFIG = {
     title: 'Proveedor', col: 'suppliers',
     fields: [
       { key:'name', label:'Nombre / razón social', type:'text', required:true },
+      { key:'code', label:'Código de proveedor (3 últimos dígitos de la cuenta 400…)', type:'text' },
       { key:'cif', label:'CIF/NIF', type:'text' },
       { key:'contactName', label:'Persona de contacto', type:'text' },
       { key:'phone', label:'Teléfono', type:'text' },
