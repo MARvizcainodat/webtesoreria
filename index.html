@@ -429,7 +429,8 @@ const SECTIONS = [
   { id: 'import', label: 'Importar facturas' },
 ];
 
-const PAYMENT_METHODS = ['Transferencia', 'Pagaré', 'Confirming', 'Cheque', 'Efectivo'];
+const PAYMENT_METHODS = ['Transferencia', 'Domiciliado', 'Tarjeta', 'Pagaré', 'Confirming', 'Cheque', 'Efectivo'];
+const BANK_METHODS = ['Transferencia', 'Domiciliado', 'Tarjeta']; /* se mueven por el banco: sin banco indicado van al banco principal */
 const EFFECT_METHODS = ['Pagaré', 'Confirming', 'Cheque'];
 const EXPENSE_CATEGORIES = [
   { id: 'gasto', label: 'Gasto fijo' },
@@ -1481,7 +1482,7 @@ function balModel() {
   const cm = {}; state.clients.forEach(c => { cm[c.id] = { id: c.id, name: c.name, ventas: 0, compras: 0, pend: 0, venc: 0, all: 0, eff: 0, dsoP: [], delP: [] }; });
   out.forEach(i => { const c = cm[i.clientId]; if (c) c.ventas += baseOf(i); });
   inn.forEach(i => { if (i.workId) { const w = byId(state.works, i.workId), c = w && cm[w.clientId]; if (c) c.compras += baseOf(i); } });
-  outL.forEach(l => { const c = cm[l.clientId]; if (!c) return; const a = num(l.amount); c.all += a; if (EFFECT_METHODS.includes(l.method)) c.eff += a;
+  outL.forEach(l => { const c = cm[l.clientId]; if (!c) return; const a = num(l.amount); c.all += a; if (EFFECT_METHODS.includes(l.method) || l.method === 'Tarjeta') c.eff += a; else if (l.method === 'Domiciliado') c.eff += a * 0.7;
     if (!l.collected) { c.pend += a; if (l.dueDate && l.dueDate < today) c.venc += a; }
     else if (isoOk(l.collectedDate)) { const inv = byId(state.invoicesOut, l.invoiceId); if (inv && isoOk(inv.date)) c.dsoP.push([dayDiff(inv.date, l.collectedDate), a]); if (isoOk(l.dueDate)) c.delP.push([Math.max(0, dayDiff(l.dueDate, l.collectedDate)), a]); } });
   const totPend = Object.values(cm).reduce((s, c) => s + c.pend, 0);
@@ -1569,7 +1570,7 @@ function chartBubble(pts, o = {}) {
   const names = st ? pts.slice().sort((a, b) => b.v - a.v).slice(0, 8).map(p => `<text x="${X(p.x)}" y="${Y(p.y) - 9 - 20 * Math.sqrt(p.v / vmax)}" text-anchor="middle" font-size="10" fill="#222">${escapeHtml(String(p.label).slice(0, 22))}</text>`).join('') : '';
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img">${g}${legal}${dots}${names}<text x="${(L + w - R) / 2}" y="${h - 6}" text-anchor="middle" font-size="11.5" fill="#333">Días medios de cobro (desde la factura)</text></svg>`;
 }
-const RISK_TEXT = 'Índice de riesgo de 0 a 100 por cliente (propuesta, pendiente de tu validación): 40 % retraso medio de cobro respecto al vencimiento (0 días = 0; 30 o más = 100), 25 % porcentaje de lo pendiente que ya está vencido, 20 % peso del cliente en el total pendiente (30 % o más = 100) y 15 % forma de pago (todo en efectos = 0; todo por transferencia = 100, porque una transferencia pendiente puede no llegar). Bajo: menos de 35 · Medio: 35 a 65 · Alto: más de 65. Si un cliente no tiene cobros registrados, el retraso no cuenta y el resto se reajusta.';
+const RISK_TEXT = 'Índice de riesgo de 0 a 100 por cliente (propuesta, pendiente de tu validación): 40 % retraso medio de cobro respecto al vencimiento (0 días = 0; 30 o más = 100), 25 % porcentaje de lo pendiente que ya está vencido, 20 % peso del cliente en el total pendiente (30 % o más = 100) y 15 % forma de pago (efectos y tarjeta = 0; domiciliado = 30, porque el recibo puede devolverse; transferencia = 100, porque una transferencia pendiente puede no llegar). Bajo: menos de 35 · Medio: 35 a 65 · Alto: más de 65. Si un cliente no tiene cobros registrados, el retraso no cuenta y el resto se reajusta.';
 function projectionRows(M) {
   return M.proj.months.map((m, k) => { const v = M.proj.hv * (1 + balSim.v / 100), c = M.proj.hc * (1 + balSim.c / 100), g = M.proj.gastos[k]; return { m, ventas: v, compras: c, gastos: g, resultado: v - c - g }; });
 }
@@ -2034,7 +2035,7 @@ function renderProvision() {
   const resultado = R[cols[cols.length - 1]].result;
   const antTotal = bucket0 + Object.values(arrivals).reduce((s, v) => s + v, 0);
   const noAseg = allOutLines().filter(l => !l.collected && !EFFECT_METHODS.includes(l.method) && l.dueDate && !dayjs(l.dueDate).isAfter(endDate, 'day')).reduce((s, l) => s + Number(l.amount || 0), 0);
-  const transf = items.filter(i => i.kind === 'out' && i.method === 'Transferencia').reduce((s, i) => s + i.amount, 0);
+  const transf = items.filter(i => i.kind === 'out' && BANK_METHODS.includes(i.method)).reduce((s, i) => s + i.amount, 0);
   const cats = ['proveedor', 'gasto', 'prestamo', 'nomina', 'impuesto', 'iva', 'puntual'].filter(c => items.some(i => i.cat === c));
   const colLabel = k => k === 'venc' ? 'Vencido' : mode7 ? dayjs(k).format('ddd D/M') : monthLabel(k);
   const G = 'color:#14663c;font-weight:600', RED = 'color:var(--expense)';
@@ -2056,7 +2057,7 @@ function renderProvision() {
       <div class="kpi"><div class="label">Saldo previsto al final</div><div class="value" style="color:var(${resultado >= 0 ? '--income' : '--expense'})">${fmtMoney(resultado)}</div><div class="muted">${resultado >= 0 ? 'Cubres lo que debes y te quedan ' + fmtMoney(resultado) : 'Te faltan ' + fmtMoney(-resultado) + ': puedes negociar efectos en la hoja Efectos'}</div></div>
     </div>
     ${noAseg > 0 ? `<div class="muted" style="margin:6px 2px 4px">No contado: ${fmtMoney(noAseg)} de cobros pendientes por transferencia u otros medios sin asegurar con vencimiento en este plazo.</div>` : ''}
-    ${transf > 0 ? `<div class="muted" style="margin:0 2px 12px">De las obligaciones, ${fmtMoney(transf)} son pagos por transferencia: se asignan al banco principal (${escapeHtml(bankNameOf(mainBankId()) || 'sin definir')}) salvo que indiques otro banco en cada pago.</div>` : ''}
+    ${transf > 0 ? `<div class="muted" style="margin:0 2px 12px">De las obligaciones, ${fmtMoney(transf)} son pagos por transferencia, domiciliación o tarjeta: se asignan al banco principal (${escapeHtml(bankNameOf(mainBankId()) || 'sin definir')}) salvo que indiques otro banco en cada pago.</div>` : ''}
     ${mode7 ? `<div class="card"><h2>Ingreso necesario hasta el ${fmtDate(endDate.format('YYYY-MM-DD'))}</h2>
       ${needRows.length === 0 ? '<div class="muted">No hay pagos asignados a ninguna cuenta en estos 7 días.</div>' : `<div class="table-wrap"><table><thead><tr><th>Cuenta</th><th>Pagos asignados (incluye vencidos)</th><th>Saldo estimado</th><th>Hay que ingresar</th></tr></thead><tbody>
         ${needRows.map(p => `<tr><td>${escapeHtml(p.b.name)}</td><td class="num" style="${RED}">−${fmtMoney(p.oblig)}</td><td class="num">${p.saldo === null ? '<span class="muted">Sin saldo anotado</span>' : fmtMoney(p.saldo)}</td><td class="num" style="font-weight:700;color:${p.need > 0 ? 'var(--expense)' : '#14663c'}">${p.need > 0 ? fmtMoney(p.need) : 'Nada: cubierto'}</td></tr>`).join('')}
