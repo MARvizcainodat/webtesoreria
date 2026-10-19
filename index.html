@@ -430,7 +430,7 @@ const SECTIONS = [
   { id: 'porpagar', label: 'Facturas por pagar' },
   { id: 'works', label: 'Obras' },
   { id: 'banks', label: 'Bancos' },
-  { id: 'provision', label: 'Provisión' },
+  { id: 'provision', label: 'Previsión' },
   { id: 'balance', label: 'Balance financiero' },
   { id: 'effects', label: 'Control de efectos' },
   { id: 'import', label: 'Importar facturas' },
@@ -697,6 +697,14 @@ function expArrears(e, m) {
   let k = ms[0], tot = 0;
   while (k < m) { tot += Math.max(0, expenseMonthAmount(e, k) - expPaid(e.id, k)); k = dayjs(k + '-01').add(1, 'month').format('YYYY-MM'); }
   return tot;
+}
+/* estado del gasto fijo en el mes actual (columna de la hoja Bancos): Pagado / Parcial / Pendiente + botón Pagar */
+function fixedMonthCell(e) {
+  const m = dayjs().format('YYYY-MM');
+  const prev = expenseMonthAmount(e, m) + expArrears(e, m), pag = expPaid(e.id, m), pend = Math.max(0, prev - pag);
+  if (prev <= 0.005 && pag <= 0.005) return '<span class="muted">No toca</span>';
+  if (pend <= 0.005) return `<span class="pill pill-income" title="Pagado ${fmtMoney(pag)}">Pagado</span>`;
+  return `<button class="btn btn-sm" data-payexp="${e.id}" data-m="${m}" data-pend="${pend.toFixed(2)}" title="${pag > 0 ? 'Parcial: pagado ' + fmtMoney(pag) + ', ' : ''}pendiente ${fmtMoney(pend)}">Pagar${pag > 0 ? ' resto' : ''}</button>`;
 }
 function fixedCards(m) {
   const rows = []; let tP = 0, tG = 0, tD = 0;
@@ -967,12 +975,24 @@ function porCobrarLines() {
     return { ...l, invDate: inv.date || '', workId: inv.workId || '', due: e.date || '', dueProv: !!e.prov, days: e.date ? daysUntil(e.date) : null };
   });
 }
-let pcClient = '', pcSearch = '';
+/* filtro por vencimiento compartido por Facturas por cobrar y por pagar */
+const VENC_OPTS = [['', 'Todos los vencimientos'], ['vencidas', 'Solo vencidas'], ['mes', 'Vencen este mes (desde hoy)'], ['ambas', 'Vencidas + vencen este mes']];
+function vencOk(l, f) {
+  if (!f) return true;
+  if (l.days === null || !l.due) return false;
+  const fin = dayjs().endOf('month').format('YYYY-MM-DD');
+  if (f === 'vencidas') return l.days < 0;
+  if (f === 'mes') return l.days >= 0 && l.due <= fin;
+  return l.due <= fin; /* ambas */
+}
+const vencLabel = f => f ? (VENC_OPTS.find(o => o[0] === f) || ['', ''])[1].toLowerCase() : '';
+const vencSelect = (id, val, style) => `<select id="${id}" style="${style}">${VENC_OPTS.map(o => `<option value="${o[0]}" ${o[0] === val ? 'selected' : ''}>${o[1]}</option>`).join('')}</select>`;
+let pcClient = '', pcSearch = '', pcVenc = '';
 function renderPorCobrar() {
   const all = porCobrarLines();
   const clientIds = [...new Set(all.map(l => l.clientId))].sort((a, b) => (byId(state.clients, a)?.name || '').localeCompare(byId(state.clients, b)?.name || '', 'es'));
   const q = stripAcc(pcSearch).trim();
-  const list = all.filter(l => (!pcClient || l.clientId === pcClient) && (!q || stripAcc(`${byId(state.clients, l.clientId)?.name || ''} ${l.invoiceNumber || ''} ${byId(state.works, l.workId)?.name || ''}`).includes(q)))
+  const list = all.filter(l => (!pcClient || l.clientId === pcClient) && vencOk(l, pcVenc) && (!q || stripAcc(`${byId(state.clients, l.clientId)?.name || ''} ${l.invoiceNumber || ''} ${byId(state.works, l.workId)?.name || ''}`).includes(q)))
     .sort((a, b) => (byId(state.clients, a.clientId)?.name || '').localeCompare(byId(state.clients, b.clientId)?.name || '', 'es') || (a.invDate < b.invDate ? -1 : 1));
   const groups = []; list.forEach(l => { let g = groups[groups.length - 1]; if (!g || g.clientId !== l.clientId) groups.push(g = { clientId: l.clientId, name: byId(state.clients, l.clientId)?.name || '—', lines: [] }); g.lines.push(l); });
   const total = list.reduce((s, l) => s + num(l.amount), 0), vencido = list.filter(l => l.days !== null && l.days < 0).reduce((s, l) => s + num(l.amount), 0);
@@ -988,12 +1008,13 @@ function renderPorCobrar() {
     <div class="card">
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
         <select id="pcClient" style="padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border-strong);background:var(--bg);color:var(--ink)"><option value="">Todos los clientes</option>${clientIds.map(id => `<option value="${id}" ${id === pcClient ? 'selected' : ''}>${escapeHtml(byId(state.clients, id)?.name || '—')}</option>`).join('')}</select>
+        ${vencSelect('pcVenc', pcVenc, 'padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border-strong);background:var(--bg);color:var(--ink)')}
         <input id="pcSearch" placeholder="Buscar cliente, nº de factura u obra…" value="${escapeHtml(pcSearch)}" style="flex:1 1 200px;min-width:0;padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border-strong);background:var(--bg);color:var(--ink)">
       </div>
       <div class="table-wrap"><table>
         <thead><tr><th>Nº factura</th><th style="text-align:right">Importe</th><th>Vencimiento</th><th></th><th>Fecha factura</th><th>Forma pactada</th><th>Obra</th></tr></thead>
         <tbody>
-          ${groups.length === 0 ? '<tr><td colspan="7" class="empty">No hay facturas pendientes sin efecto recibido.</td></tr>' : ''}
+          ${groups.length === 0 ? `<tr><td colspan="7" class="empty">${pcVenc ? 'No hay facturas con este filtro de vencimiento.' : 'No hay facturas pendientes sin efecto recibido.'}</td></tr>` : ''}
           ${groups.map(g => `<tr style="background:var(--surface-2);cursor:default"><td style="font-weight:700">${escapeHtml(g.name)} <span class="muted" style="font-weight:400">· ${g.lines.length}</span></td><td class="num" style="font-weight:700">${fmtMoney(g.lines.reduce((s, l) => s + num(l.amount), 0))}</td><td colspan="5"></td></tr>
             ${g.lines.map(l => `<tr data-pcinv="${l.invoiceId}"><td class="mono">${escapeHtml(l.invoiceNumber || '—')}${l._implicit ? '' : ' <span class="muted">(parcial)</span>'}</td><td class="num">${fmtMoney(l.amount)}</td><td class="mono">${dueTxt(l)}</td><td>${dayPill(l)}</td><td class="mono">${fmtDate(l.invDate)}</td><td>${escapeHtml(l.method || '—')}</td><td class="muted">${escapeHtml(byId(state.works, l.workId)?.name || '—')}</td></tr>`).join('')}`).join('')}
           ${groups.length ? `<tr><td style="font-weight:700;border-top:2px solid var(--border-strong)">TOTAL</td><td class="num" style="font-weight:700;border-top:2px solid var(--border-strong)">${fmtMoney(total)}</td><td colspan="5" style="border-top:2px solid var(--border-strong)"></td></tr>` : ''}
@@ -1001,17 +1022,18 @@ function renderPorCobrar() {
       <div class="muted" style="margin-top:8px;font-size:12px">Cuando recibas el pagaré o el confirming, ábrelo en la factura (pulsa la fila) y anota el banco emisor y su vencimiento: la factura dejará de salir aquí y pasará a Control de efectos.</div>
     </div>`;
   document.getElementById('pcClient').onchange = e => { pcClient = e.target.value; renderPorCobrar(); };
+  document.getElementById('pcVenc').onchange = e => { pcVenc = e.target.value; renderPorCobrar(); };
   const se = document.getElementById('pcSearch'); se.oninput = () => { pcSearch = se.value; const pos = se.selectionStart; renderPorCobrar(); const n = document.getElementById('pcSearch'); n.focus(); n.setSelectionRange(pos, pos); };
   document.querySelectorAll('[data-pcinv]').forEach(tr => tr.onclick = () => openEntityModal('invoiceOut', tr.dataset.pcinv));
   document.getElementById('pcPrint').onclick = () => {
     const rows = [];
     groups.forEach(g => { rows.push({ group: escapeHtml(g.name), total: fmtMoney(g.lines.reduce((s, l) => s + num(l.amount), 0)) }); g.lines.forEach(l => rows.push([escapeHtml(l.invoiceNumber || '—'), fmtDate(l.invDate), escapeHtml(byId(state.works, l.workId)?.name || '—'), escapeHtml(l.method || '—'), l.due ? fmtDate(l.due) : '—', l.days === null ? '' : l.days < 0 ? `Vencida ${-l.days} d` : `En ${l.days} d`, fmtMoney(l.amount)])); });
-    printDoc(listDoc('Facturas pendientes de cobro (sin pagaré ni confirming recibido)' + (pcClient ? ' · ' + (byId(state.clients, pcClient)?.name || '') : ''), ['Nº factura', 'Fecha', 'Obra', 'Forma pactada', 'Vencimiento', 'Situación', 'Importe'], rows, `Total ${fmtMoney(total)} · vencido ${fmtMoney(vencido)}`));
+    printDoc(listDoc('Facturas pendientes de cobro (sin pagaré ni confirming recibido)' + (pcClient ? ' · ' + (byId(state.clients, pcClient)?.name || '') : '') + (pcVenc ? ' · ' + vencLabel(pcVenc) : ''), ['Nº factura', 'Fecha', 'Obra', 'Forma pactada', 'Vencimiento', 'Situación', 'Importe'], rows, `Total ${fmtMoney(total)} · vencido ${fmtMoney(vencido)}`));
   };
 }
 
 /* ---------- FACTURAS POR PAGAR (todo lo pendiente a proveedores) ---------- */
-let ppSupplier = '', ppSearch = '', ppTipo = '';
+let ppSupplier = '', ppSearch = '', ppTipo = '', ppVenc = '';
 function renderPorPagar() {
   const all = allInLines().filter(l => !l.paid).map(l => {
     const inv = byId(state.invoicesIn, l.invoiceId) || {}, e = expectedDate(l, false);
@@ -1020,7 +1042,7 @@ function renderPorPagar() {
   const supIds = [...new Set(all.map(l => l.supplierId))].sort((a, b) => (byId(state.suppliers, a)?.name || '').localeCompare(byId(state.suppliers, b)?.name || '', 'es'));
   const q = stripAcc(ppSearch).trim();
   const tipoOk = l => !ppTipo || (ppTipo === 'efecto' ? EFFECT_METHODS.includes(l.method) : !EFFECT_METHODS.includes(l.method));
-  const list = all.filter(l => (!ppSupplier || l.supplierId === ppSupplier) && tipoOk(l) && (!q || stripAcc(`${byId(state.suppliers, l.supplierId)?.name || ''} ${l.invoiceNumber || ''} ${l.works}`).includes(q)))
+  const list = all.filter(l => (!ppSupplier || l.supplierId === ppSupplier) && tipoOk(l) && vencOk(l, ppVenc) && (!q || stripAcc(`${byId(state.suppliers, l.supplierId)?.name || ''} ${l.invoiceNumber || ''} ${l.works}`).includes(q)))
     .sort((a, b) => (byId(state.suppliers, a.supplierId)?.name || '').localeCompare(byId(state.suppliers, b.supplierId)?.name || '', 'es') || ((a.due || '9') < (b.due || '9') ? -1 : 1));
   const groups = []; list.forEach(l => { let g = groups[groups.length - 1]; if (!g || g.supplierId !== l.supplierId) groups.push(g = { supplierId: l.supplierId, name: byId(state.suppliers, l.supplierId)?.name || '—', lines: [] }); g.lines.push(l); });
   const sum = arr => arr.reduce((s, l) => s + num(l.amount), 0);
@@ -1040,12 +1062,13 @@ function renderPorPagar() {
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
         <select id="ppSupplier" style="${sel}"><option value="">Todos los proveedores</option>${supIds.map(id => `<option value="${id}" ${id === ppSupplier ? 'selected' : ''}>${escapeHtml(byId(state.suppliers, id)?.name || '—')}</option>`).join('')}</select>
         <select id="ppTipo" style="${sel}"><option value="">Todas las formas de pago</option><option value="efecto" ${ppTipo === 'efecto' ? 'selected' : ''}>Solo pagarés, confirming y cheques</option><option value="otros" ${ppTipo === 'otros' ? 'selected' : ''}>Solo transferencia, domiciliado y otros</option></select>
+        ${vencSelect('ppVenc', ppVenc, sel)}
         <input id="ppSearch" placeholder="Buscar proveedor, nº de factura u obra…" value="${escapeHtml(ppSearch)}" style="flex:1 1 200px;min-width:0;${sel}">
       </div>
       <div class="table-wrap"><table>
         <thead><tr><th>Nº factura</th><th style="text-align:right">Importe</th><th>Vencimiento</th><th></th><th>Fecha factura</th><th>Forma de pago</th><th>Obra</th></tr></thead>
         <tbody>
-          ${groups.length === 0 ? '<tr><td colspan="7" class="empty">No hay facturas de proveedores pendientes de pago.</td></tr>' : ''}
+          ${groups.length === 0 ? `<tr><td colspan="7" class="empty">${ppVenc ? 'No hay facturas con este filtro de vencimiento.' : 'No hay facturas de proveedores pendientes de pago.'}</td></tr>` : ''}
           ${groups.map(g => `<tr style="background:var(--surface-2);cursor:default"><td style="font-weight:700">${escapeHtml(g.name)} <span class="muted" style="font-weight:400">· ${g.lines.length}</span></td><td class="num" style="font-weight:700">${fmtMoney(sum(g.lines))}</td><td colspan="5"></td></tr>
             ${g.lines.map(l => `<tr data-ppinv="${l.invoiceId}"><td class="mono">${escapeHtml(l.invoiceNumber || '—')}${l._implicit ? '' : ' <span class="muted">(parcial)</span>'}</td><td class="num">${fmtMoney(l.amount)}</td><td class="mono">${dueTxt(l)}</td><td>${dayPill(l)}</td><td class="mono">${fmtDate(l.invDate)}</td><td>${escapeHtml(l.method || '—')}${l.issuingBank ? ' <span class="muted">· ' + escapeHtml(l.issuingBank) + '</span>' : ''}</td><td class="muted">${escapeHtml(l.works || '—')}</td></tr>`).join('')}`).join('')}
           ${groups.length ? `<tr><td style="font-weight:700;border-top:2px solid var(--border-strong)">TOTAL</td><td class="num" style="font-weight:700;border-top:2px solid var(--border-strong)">${fmtMoney(total)}</td><td colspan="5" style="border-top:2px solid var(--border-strong)"></td></tr>` : ''}
@@ -1053,12 +1076,13 @@ function renderPorPagar() {
     </div>`;
   document.getElementById('ppSupplier').onchange = e => { ppSupplier = e.target.value; renderPorPagar(); };
   document.getElementById('ppTipo').onchange = e => { ppTipo = e.target.value; renderPorPagar(); };
+  document.getElementById('ppVenc').onchange = e => { ppVenc = e.target.value; renderPorPagar(); };
   const se = document.getElementById('ppSearch'); se.oninput = () => { ppSearch = se.value; const pos = se.selectionStart; renderPorPagar(); const n = document.getElementById('ppSearch'); n.focus(); n.setSelectionRange(pos, pos); };
   document.querySelectorAll('[data-ppinv]').forEach(tr => tr.onclick = () => openEntityModal('invoiceIn', tr.dataset.ppinv));
   document.getElementById('ppPrint').onclick = () => {
     const rows = [];
     groups.forEach(g => { rows.push({ group: escapeHtml(g.name), total: fmtMoney(sum(g.lines)) }); g.lines.forEach(l => rows.push([escapeHtml(l.invoiceNumber || '—'), fmtDate(l.invDate), escapeHtml(l.method || '—') + (l.issuingBank ? ' · ' + escapeHtml(l.issuingBank) : ''), l.due ? fmtDate(l.due) : '—', l.days === null ? '' : l.days < 0 ? `Vencida ${-l.days} d` : `En ${l.days} d`, fmtMoney(l.amount)])); });
-    const filtro = [ppSupplier ? byId(state.suppliers, ppSupplier)?.name : '', ppTipo === 'efecto' ? 'solo efectos' : ppTipo === 'otros' ? 'sin efectos' : ''].filter(Boolean).join(' · ');
+    const filtro = [ppSupplier ? byId(state.suppliers, ppSupplier)?.name : '', ppTipo === 'efecto' ? 'solo efectos' : ppTipo === 'otros' ? 'sin efectos' : '', vencLabel(ppVenc)].filter(Boolean).join(' · ');
     printDoc(listDoc('Facturas pendientes de pago' + (filtro ? ' · ' + filtro : ''), ['Nº factura', 'Fecha', 'Forma de pago', 'Vencimiento', 'Situación', 'Importe'], rows, `Total ${fmtMoney(total)} · vencido ${fmtMoney(vencido)} · vence en 7 días ${fmtMoney(semana)}`));
   };
 }
@@ -1572,7 +1596,7 @@ function creditCardHtml() {
         <td><button class="btn btn-sm" data-bal="${r.b.id}">Anotar dispuesto</button> <button class="btn btn-sm" data-bedit="${r.b.id}">Editar</button></td></tr>`; }).join('')}
       ${rows.length ? `<tr style="border-top:2px solid var(--border-strong)"><td colspan="2"><strong>Total</strong></td><td class="num"><strong>${fmtMoney(tot('lim'))}</strong></td><td class="num"><strong>${fmtMoney(tot('disp'))}</strong></td><td class="num"><strong style="${signStyle(tot('libre'))}">${fmtMoney(tot('libre'))}</strong></td><td colspan="2"></td></tr>` : ''}
     </tbody></table></div>
-    <div class="muted" style="margin-top:6px">No suman en el dinero disponible ni en la provisión: son financiación que podéis usar. El cargo mensual de las tarjetas sigue saliendo de Gastos fijos.</div></div>`;
+    <div class="muted" style="margin-top:6px">No suman en el dinero disponible ni en la previsión: son financiación que podéis usar. El cargo mensual de las tarjetas sigue saliendo de Gastos fijos.</div></div>`;
 }
 function renderBanks() {
   const list = bankList().map(b => ({ b, r: bankBalanceNow(b.id) }));
@@ -1624,11 +1648,12 @@ function renderBanks() {
       </tbody></table></div></div>
     <div class="card"><div class="topbar" style="margin-bottom:8px"><h2 style="margin:0">Gastos fijos, préstamos, impuestos y nóminas configurados</h2><div><button class="btn" id="ivaSplit3">Fraccionar IVA</button> <button class="btn btn-primary" id="addExpense">+ Gasto fijo</button></div></div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Concepto</th><th>Categoría</th><th>Importe</th><th>Periodicidad</th><th>Próximo vencimiento</th><th>Banco</th><th>Préstamo</th></tr></thead>
+        <thead><tr><th>Concepto</th><th>${monthLabel(dayjs().format('YYYY-MM'))}</th><th>Categoría</th><th>Importe</th><th>Periodicidad</th><th>Próximo vencimiento</th><th>Banco</th><th>Préstamo</th></tr></thead>
         <tbody>
-          ${state.fixedExpenses.length === 0 ? '<tr><td colspan="7" class="empty">Sin conceptos configurados.</td></tr>' : ''}
+          ${state.fixedExpenses.length === 0 ? '<tr><td colspan="8" class="empty">Sin conceptos configurados.</td></tr>' : ''}
           ${state.fixedExpenses.map(e => `
             <tr data-fid="${e.id}" style="cursor:pointer"><td>${escapeHtml(e.concept)}</td>
+              <td style="white-space:nowrap">${fixedMonthCell(e)}</td>
               <td><span class="pill pill-neutral">${EXPENSE_CATEGORIES.find(c => c.id === e.category)?.label || e.category}</span></td>
               <td class="num">${e.autoIvaCalc ? 'Automático' : fmtMoney(e.amount)}</td>
               <td class="muted">${FREQUENCIES.find(f => f.id === e.frequency)?.label || e.frequency}</td>
@@ -1654,6 +1679,7 @@ function renderBanks() {
   document.querySelectorAll('[data-tr]').forEach(tr => tr.onclick = () => openEntityModal('bankTransfer', tr.dataset.tr));
   document.querySelectorAll('[data-oo]').forEach(tr => tr.onclick = () => openEntityModal('oneOffExpense', tr.dataset.oo));
   document.querySelectorAll('[data-fid]').forEach(tr => tr.onclick = () => openEntityModal('fixedExpense', tr.dataset.fid));
+  document.querySelectorAll('#main [data-payexp]').forEach(b => b.onclick = ev => { ev.stopPropagation(); openEntityModal('expensePayment', null, { expenseId: b.dataset.payexp, month: b.dataset.m, amount: Number(b.dataset.pend), date: todayISO(), bank: byId(state.fixedExpenses, b.dataset.payexp)?.bank || '' }); });
 }
 
 /* ===================== BALANCE FINANCIERO ===================== */
@@ -1713,7 +1739,7 @@ function balModel() {
   const avg = (arr) => hist.length ? hist.reduce((s, m) => s + sumB(arr.filter(i => isoOk(i.date) && i.date.slice(0, 7) === m)), 0) / hist.length : 0;
   const nxt = Array.from({ length: 6 }, (_, k) => dayjs().startOf('month').add(k + 1, 'month').format('YYYY-MM'));
   const proj = { hv: avg(state.invoicesOut), hc: avg(state.invoicesIn), nHist: hist.length, months: nxt, gastos: nxt.map(gastosMes) };
-  /* liquidez a 3 meses (misma lógica que Provisión) */
+  /* liquidez a 3 meses (misma lógica que Previsión) */
   const pit = provisionItems(nextMonths(3)), banks = bankList(), disp = banks.reduce((s, b) => { const r = bankBalanceNow(b.id); return s + (r ? r.total : 0); }, 0);
   const aseg = pit.filter(i => i.kind === 'in').reduce((s, i) => s + i.amount, 0), oblig = pit.filter(i => i.kind === 'out').reduce((s, i) => s + i.amount, 0);
   const liq = { disp, aseg, oblig, res: disp + aseg - oblig, sinSaldo: banks.filter(b => !bankBalanceNow(b.id)).length };
@@ -2190,7 +2216,7 @@ function expectedCardHtml(months) {
   const sum = cols.reduce((a, k) => ({ c: a.c + tot(k).c, p: a.p + tot(k).p }), { c: 0, p: 0 });
   return `<div class="card">
     <h2>Previsión a 6 meses según plazos pactados</h2>
-    <div class="muted" style="margin-bottom:6px">Todo lo que se espera cobrar y pagar <strong>si todos cumplen</strong>, en su fecha. Es distinto de Provisión, que solo cuenta lo asegurado y el dinero que hay.</div>
+    <div class="muted" style="margin-bottom:6px">Todo lo que se espera cobrar y pagar <strong>si todos cumplen</strong>, en su fecha. Es distinto de la pantalla «Previsión de tesorería», que solo cuenta lo asegurado y el dinero que hay.</div>
     <div class="table-wrap"><svg viewBox="0 0 ${w} ${h}" width="100%" style="overflow:visible"><defs>
       <pattern id="hG" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#fff"/><rect width="2.5" height="6" fill="var(--income)" opacity=".75"/></pattern>
       <pattern id="hR" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#fff"/><rect width="2.5" height="6" fill="var(--expense)" opacity=".75"/></pattern></defs>
@@ -2342,7 +2368,7 @@ function renderProvision() {
   const needRows = perBank.filter(p => p.oblig > 0).map(p => ({ ...p, need: Math.max(0, p.oblig - (p.saldo || 0)) }));
   const needTotal = needRows.reduce((s, p) => s + p.need, 0);
   document.getElementById('main').innerHTML = `
-    <div class="topbar"><div><h1>Provisión de tesorería</h1><div class="subtitle">Lo que tienes, lo que te entrará con seguridad razonable y lo que debes en ese plazo</div></div>
+    <div class="topbar"><div><h1>Previsión de tesorería</h1><div class="subtitle">Lo que tienes, lo que te entrará con seguridad razonable y lo que debes en ese plazo</div></div>
       <div><button class="btn" id="ivaSplit2">Fraccionar IVA</button> <button class="btn" id="addOneOff2">+ Gasto puntual</button> <button class="btn" id="addExpense">+ Gasto fijo / préstamo / impuesto / nómina</button></div></div>
     <div class="section-toggle">${horizons.map(([v, l]) => `<button data-h="${v}" class="${provisionHorizon === v ? 'active' : ''}">${l}</button>`).join('')}</div>
     <div class="kpi-row">
@@ -2354,7 +2380,7 @@ function renderProvision() {
     ${ctlTot > 0 ? `<div class="card" style="padding:12px 16px"><div style="font-weight:600;margin-bottom:4px">Cuadre con Control de efectos · ${monthLabel(todayMonth)}</div>
       <div class="muted" style="font-size:12.5px;line-height:1.7">Total del mes en Control de efectos: <strong class="mono">${fmtMoney(ctlTot)}</strong><br>
       − Ya cobrado (ya está en el saldo del banco, no se cuenta otra vez): <strong class="mono">${fmtMoney(ctlCob)}</strong>${ctlNeg > 0 ? ` <span>(de ello ${fmtMoney(ctlNeg)} negociado: sale en «Cobros anticipados»)</span>` : ''}<br>
-      = Pendiente del mes: <strong class="mono">${fmtMoney(ctlTot - ctlCob)}</strong> · en la provisión, cobros asegurados de ${monthLabel(todayMonth)}: <strong class="mono">${fmtMoney(asegMes)}</strong>${asegVenc > 0 ? ` + vencidos de meses anteriores sin marcar como cobrados: <strong class="mono">${fmtMoney(asegVenc)}</strong>` : ''}</div></div>` : ''}
+      = Pendiente del mes: <strong class="mono">${fmtMoney(ctlTot - ctlCob)}</strong> · en la previsión, cobros asegurados de ${monthLabel(todayMonth)}: <strong class="mono">${fmtMoney(asegMes)}</strong>${asegVenc > 0 ? ` + vencidos de meses anteriores sin marcar como cobrados: <strong class="mono">${fmtMoney(asegVenc)}</strong>` : ''}</div></div>` : ''}
     ${noAseg > 0 ? `<div class="muted" style="margin:6px 2px 4px">No contado: ${fmtMoney(noAseg)} de cobros pendientes por transferencia u otros medios sin asegurar con vencimiento en este plazo.</div>` : ''}
     ${transf > 0 ? `<div class="muted" style="margin:0 2px 12px">De las obligaciones, ${fmtMoney(transf)} son pagos por transferencia, domiciliación o tarjeta: se asignan al banco principal (${escapeHtml(bankNameOf(mainBankId()) || 'sin definir')}) salvo que indiques otro banco en cada pago.</div>` : ''}
     ${mode7 ? `<div class="card"><h2>Ingreso necesario hasta el ${fmtDate(endDate.format('YYYY-MM-DD'))}</h2>
@@ -2362,7 +2388,7 @@ function renderProvision() {
         ${needRows.map(p => `<tr><td>${escapeHtml(p.b.name)}</td><td class="num" style="${RED}">−${fmtMoney(p.oblig)}</td><td class="num" style="${p.saldo === null ? '' : signStyle(p.saldo)}">${p.saldo === null ? '<span class="muted">Sin saldo anotado</span>' : fmtMoney(p.saldo)}</td><td class="num" style="font-weight:700;color:${p.need > 0 ? 'var(--expense)' : '#14663c'}">${p.need > 0 ? fmtMoney(p.need) : 'Nada: cubierto'}</td></tr>`).join('')}
         ${sinBanco > 0 ? `<tr><td>Sin banco indicado</td><td class="num" style="${RED}">−${fmtMoney(sinBanco)}</td><td></td><td class="muted">Asigna banco a estos pagos</td></tr>` : ''}
         </tbody></table></div><div style="margin-top:8px"><strong>Total a ingresar: <span style="color:${needTotal > 0 ? 'var(--expense)' : '#14663c'}">${fmtMoney(needTotal)}</span></strong> <span class="muted">· no cuenta los cobros que puedan entrar esa semana</span></div>`}</div>` : ''}
-    <div class="card"><h2>Provisión ${mode7 ? 'a 7 días' : 'a ' + provisionHorizon + (provisionHorizon === 1 ? ' mes' : ' meses')}</h2><div class="table-wrap"><table class="prov-table">
+    <div class="card"><h2>Previsión ${mode7 ? 'a 7 días' : 'a ' + provisionHorizon + (provisionHorizon === 1 ? ' mes' : ' meses')}</h2><div class="table-wrap"><table class="prov-table">
       <thead><tr><th>Concepto</th>${cols.map(k => `<th>${colLabel(k)}</th>`).join('')}<th>Total del periodo</th></tr></thead>
       <tbody>
         <tr><td style="${G}">Saldo bancario</td>${cols.map(k => `<td class="num" style="${G}">${fmtMoney(R[k].bank)}</td>`).join('')}<td class="num" style="${G}" title="No es una suma: es el dinero con el que se empieza">${fmtMoney(bank0)}<div style="font-size:10px;font-weight:400" class="muted">de partida</div></td></tr>
@@ -2581,7 +2607,7 @@ function negociarCardHtml() {
       <label style="font-size:12px;flex:1 1 200px;min-width:0;max-width:100%">Banco donde entra el dinero<br><select id="negBank"><option value="">Elige el banco…</option>${banks.map(o => `<option value="${o.value}">${escapeHtml(o.label)}</option>`).join('')}</select></label>
       <label style="font-size:12px">Fecha<br><input type="date" id="negDate" value="${todayISO()}"></label>
       <button class="btn btn-primary" id="negGo" disabled>Negociar</button></div>
-    <div class="muted" style="margin-top:8px">Se anota como cobrado por el importe nominal y en Provisión aparece como «Cobros anticipados». El banco descontará intereses y gastos: cuando los conozcas, añádelos como gasto puntual en la hoja Bancos para que cuenten en el balance.</div>`}</div>`;
+    <div class="muted" style="margin-top:8px">Se anota como cobrado por el importe nominal y en Previsión aparece como «Cobros anticipados». El banco descontará intereses y gastos: cuando los conozcas, añádelos como gasto puntual en la hoja Bancos para que cuenten en el balance.</div>`}</div>`;
 }
 function setupNegociar() {
   const go = document.getElementById('negGo'); if (!go) return;
