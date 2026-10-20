@@ -1,0 +1,184 @@
+<!-- ===================== PREVISIÓN DE TESORERÍA (módulo) =====================
+  Réplica de la hoja "prevision_ana" calculada con los datos de datt.
+  Para usarlo en el panel:
+    1) Copia el bloque <style> y el <div id="prevision"> donde quieras la pantalla.
+    2) Copia el <script> del módulo.
+    3) Cuando el panel ya tenga cargadas las tablas de datt, llama a:
+         pintarPrevision(document.getElementById('prevision'), {
+           invoicesOut, invoiceOutPayments, invoicesIn, invoiceInPayments,
+           bankBalances, bankAccounts, clients, suppliers
+         });
+       Cada tabla es una lista de objetos (el JSON de la columna B de datt, con su id).
+========================================================================== -->
+<style>
+#prevision{
+  /* Layout: resumen arriba (como las celdas TOTAL/DIFERENCIA), debajo dos columnas Ventas | Compras como en la hoja */
+  --pv-bg:#f6f7f8; --pv-card:#ffffff; --pv-fg:#1d2329; --pv-muted:#5f6b76; --pv-line:#dde2e7;
+  --pv-accent:#2f5d7c; --pv-accent-soft:#e6eef4; --pv-pos:#1f7a4d; --pv-neg:#b3362b; --pv-warn:#9a6a00; --pv-warn-soft:#fbf1d9;
+  --pv-head:"Archivo", "Segoe UI", system-ui, sans-serif;
+  --pv-body:"Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --pv-num:"JetBrains Mono", ui-monospace, Consolas, monospace;
+  font-family:var(--pv-body); color:var(--pv-fg); font-size:15px; line-height:1.45;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) #prevision{
+  --pv-bg:#14181c; --pv-card:#1c2227; --pv-fg:#e4e8ec; --pv-muted:#9aa6b1; --pv-line:#2e363e;
+  --pv-accent:#8fb8d6; --pv-accent-soft:#22313d; --pv-pos:#5cc492; --pv-neg:#f08378; --pv-warn:#e0b354; --pv-warn-soft:#3a3020; } }
+:root[data-theme="dark"] #prevision{
+  --pv-bg:#14181c; --pv-card:#1c2227; --pv-fg:#e4e8ec; --pv-muted:#9aa6b1; --pv-line:#2e363e;
+  --pv-accent:#8fb8d6; --pv-accent-soft:#22313d; --pv-pos:#5cc492; --pv-neg:#f08378; --pv-warn:#e0b354; --pv-warn-soft:#3a3020; }
+#prevision *{box-sizing:border-box}
+#prevision h2,#prevision h3{font-family:var(--pv-head); margin:0; text-wrap:balance}
+#prevision .pv-top{display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:8px 24px; margin-bottom:16px}
+#prevision .pv-top h2{font-size:1.6rem; font-weight:700; letter-spacing:-.01em}
+#prevision .pv-fecha{color:var(--pv-muted); font-size:.9rem}
+#prevision .pv-resumen{display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; margin-bottom:20px}
+#prevision .pv-kpi{background:var(--pv-card); border:1px solid var(--pv-line); border-radius:8px; padding:14px 16px; display:flex; flex-direction:column; gap:4px}
+#prevision .pv-kpi .lbl{font-size:.75rem; text-transform:uppercase; letter-spacing:.08em; color:var(--pv-muted); font-weight:600}
+#prevision .pv-kpi .val{font-family:var(--pv-num); font-size:1.35rem; font-variant-numeric:tabular-nums; font-weight:600}
+#prevision .pv-kpi .det{font-size:.82rem; color:var(--pv-muted)}
+#prevision .pv-kpi.difer{background:var(--pv-accent-soft); border-color:transparent}
+#prevision .pos{color:var(--pv-pos)} #prevision .neg{color:var(--pv-neg)}
+#prevision .pv-cols{display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr)); gap:20px; align-items:start}
+#prevision .pv-col{display:flex; flex-direction:column; gap:16px; min-width:0}
+#prevision .pv-col > h3{font-size:.85rem; text-transform:uppercase; letter-spacing:.12em; color:var(--pv-accent); border-bottom:2px solid var(--pv-accent); padding-bottom:4px}
+#prevision details.pv-blk{background:var(--pv-card); border:1px solid var(--pv-line); border-radius:8px; min-width:0}
+#prevision details.pv-blk > summary{cursor:pointer; list-style:none; display:flex; justify-content:space-between; align-items:baseline; gap:12px; padding:12px 16px; font-weight:600}
+#prevision details.pv-blk > summary::-webkit-details-marker{display:none}
+#prevision details.pv-blk > summary::before{content:"▸"; color:var(--pv-muted); margin-right:6px; transition:transform .15s}
+#prevision details.pv-blk[open] > summary::before{transform:rotate(90deg); display:inline-block}
+#prevision details.pv-blk > summary:focus-visible{outline:2px solid var(--pv-accent); outline-offset:2px}
+#prevision summary .t{flex:1}
+#prevision summary .n{font-weight:400; color:var(--pv-muted); font-size:.85rem; margin-left:6px}
+#prevision summary .s{font-family:var(--pv-num); font-variant-numeric:tabular-nums}
+#prevision .pv-tw{overflow-x:auto; border-top:1px solid var(--pv-line); max-height:460px; overflow-y:auto}
+#prevision table{border-collapse:collapse; width:100%; font-size:.88rem}
+#prevision th{position:sticky; top:0; background:var(--pv-card); text-align:left; font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:var(--pv-muted); padding:8px 12px; border-bottom:1px solid var(--pv-line); white-space:nowrap}
+#prevision td{padding:6px 12px; border-bottom:1px solid var(--pv-line); vertical-align:top}
+#prevision tr:last-child td{border-bottom:0}
+#prevision td.num, #prevision th.num{text-align:right; font-family:var(--pv-num); font-variant-numeric:tabular-nums; white-space:nowrap}
+#prevision td.f{white-space:nowrap; color:var(--pv-muted); font-variant-numeric:tabular-nums}
+#prevision td.nm{min-width:160px}
+#prevision .chip{display:inline-block; font-size:.7rem; padding:1px 6px; border-radius:10px; background:var(--pv-accent-soft); color:var(--pv-accent); font-weight:600; margin-left:4px; white-space:nowrap}
+#prevision .chip.venc{background:var(--pv-warn-soft); color:var(--pv-warn)}
+#prevision .pv-mes{border-top:1px solid var(--pv-line)}
+#prevision .pv-mes > summary{padding:8px 16px; cursor:pointer; display:flex; justify-content:space-between; gap:12px}
+#prevision .pv-mes > summary:focus-visible{outline:2px solid var(--pv-accent)}
+#prevision .pv-mes .pv-tw{max-height:none}
+#prevision .pv-bancos td input{width:9.5em; font:inherit; font-family:var(--pv-num); text-align:right; padding:3px 6px; border:1px solid var(--pv-line); border-radius:4px; background:var(--pv-bg); color:var(--pv-fg)}
+#prevision .pv-bancos td input:focus-visible{outline:2px solid var(--pv-accent)}
+#prevision .pv-nota{font-size:.8rem; color:var(--pv-muted); padding:8px 16px 12px}
+#prevision tfoot td{font-weight:700; border-top:2px solid var(--pv-line)}
+</style>
+
+<div id="prevision"></div>
+
+<script>
+/* ---------- PREVISIÓN DE TESORERÍA: cálculo + pintado ---------- */
+(function(){
+  const MESES=['ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO','JULIO','AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE'];
+  const r2=x=>Math.round(x*100)/100;
+  const num=x=>{const [e,d]=Math.abs(x).toFixed(2).split('.');return (x<0?'−':'')+e.replace(/\B(?=(\d{3})+(?!\d))/g,'.')+','+d};
+  const eur=x=>num(x)+' €';
+  const fd=s=>s?s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(2,4):'';
+  const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const sum=(a,k='importe')=>r2(a.reduce((s,x)=>s+x[k],0));
+
+  /* Cálculo. Equivale a las columnas de la hoja:
+     B  Ventas: facturas emitidas sin cobrar (importe menos lo ya cobrado o recibido en pagaré)
+     D  Pagarés recibidos: efectos de clientes aún no cobrados
+     H  Compras: facturas de proveedor sin pagar (importe menos lo ya pagado o dado en pagaré)
+     J  Pagarés a pagar por mes de vencimiento
+     Bancos: último saldo de cada cuenta + saldos que se apuntan a mano (p. ej. Vizcaíno Stone) */
+  window.calcularPrevision=function(t, extras){
+    const hoy=new Date().toISOString().slice(0,10);
+    const cli={}; (t.clients||[]).forEach(c=>cli[c.id]=c.name);
+    const pro={}; (t.suppliers||[]).forEach(s=>pro[s.id]=s.name);
+    const fOut={}; (t.invoicesOut||[]).forEach(f=>fOut[f.id]=f);
+    const fIn={};  (t.invoicesIn||[]).forEach(f=>fIn[f.id]=f);
+    const pagOut={}; (t.invoiceOutPayments||[]).forEach(p=>(pagOut[p.invoiceId]=pagOut[p.invoiceId]||[]).push(p));
+    const pagIn={};  (t.invoiceInPayments||[]).forEach(p=>(pagIn[p.invoiceId]=pagIn[p.invoiceId]||[]).push(p));
+    const resto=(f,lista)=>r2(f.amount-(lista[f.id]||[]).reduce((s,p)=>s+(+p.amount||0),0));
+
+    const ventas=(t.invoicesOut||[]).filter(f=>!f.collected).map(f=>({numero:f.number,fecha:f.date,vence:f.dueDate,nombre:cli[f.clientId]||'—',importe:resto(f,pagOut)}))
+      .filter(x=>x.importe>0.005).sort((a,b)=>(b.fecha||'').localeCompare(a.fecha||''));
+    const cartera=(t.invoiceOutPayments||[]).filter(p=>!p.collected).map(p=>{const f=fOut[p.invoiceId]||{};
+      return {numero:f.number||'',nombre:cli[f.clientId]||'—',vence:p.dueDate||'',tipo:p.method||'',remesado:!!(p.remesado||p.negotiated),importe:r2(+p.amount||0)}})
+      .sort((a,b)=>(a.vence||'9').localeCompare(b.vence||'9'));
+    const compras=(t.invoicesIn||[]).filter(f=>!f.paid).map(f=>({numero:f.number,fecha:f.date,vence:f.dueDate,nombre:pro[f.supplierId]||'—',importe:resto(f,pagIn)}))
+      .filter(x=>x.importe>0.005).sort((a,b)=>(b.fecha||'').localeCompare(a.fecha||''));
+    const efectos=(t.invoiceInPayments||[]).filter(p=>!p.paid).map(p=>{const f=fIn[p.invoiceId]||{};
+      return {numero:f.number||'',nombre:pro[f.supplierId]||'—',vence:p.dueDate||'',tipo:p.method||'',importe:r2(+p.amount||0)}});
+    const meses={};
+    efectos.forEach(e=>{const k=e.vence?e.vence.slice(0,7):'sin';(meses[k]=meses[k]||[]).push(e)});
+    const pagaresMes=Object.keys(meses).sort((a,b)=>a==='sin'?1:b==='sin'?-1:a.localeCompare(b)).map(k=>({
+      clave:k, nombre:k==='sin'?'SIN FECHA':MESES[+k.slice(5,7)-1]+' '+k.slice(0,4),
+      lineas:meses[k].sort((a,b)=>a.vence.localeCompare(b.vence)), importe:sum(meses[k])}));
+
+    const ult={};
+    (t.bankBalances||[]).forEach(b=>{const o=ult[b.bankId]; if(!o||b.date>=o.date) ult[b.bankId]=b});
+    const bancos=(t.bankAccounts||[]).filter(a=>!a.archived).map(a=>({nombre:a.name,fecha:ult[a.id]?.date||'',importe:r2(ult[a.id]?.amount||0)}));
+    if(ult.cash && ult.cash.amount) bancos.push({nombre:'CAJA',fecha:ult.cash.date,importe:r2(ult.cash.amount)});
+    (extras||[]).forEach(e=>bancos.push({nombre:e.nombre,fecha:'',importe:r2(+e.importe||0),manual:true,clave:e.clave}));
+
+    const tVentas=sum(ventas), tCartera=sum(cartera), tBancos=sum(bancos), tCompras=sum(compras), tPagares=sum(pagaresMes);
+    const totalVentas=r2(tVentas+tCartera+tBancos), totalCompras=r2(tCompras+tPagares);
+    return {hoy,ventas,cartera,compras,pagaresMes,bancos,tVentas,tCartera,tBancos,tCompras,tPagares,totalVentas,totalCompras,diferencia:r2(totalVentas-totalCompras)};
+  };
+
+  const tabla=(cab,filas,total)=>`<div class="pv-tw"><table><thead><tr>${cab.map(c=>`<th${c.n?' class="num"':''}>${c.t}</th>`).join('')}</tr></thead><tbody>${filas.join('')}</tbody>${total?`<tfoot><tr><td colspan="${cab.length-1}">Total</td><td class="num">${eur(total)}</td></tr></tfoot>`:''}</table></div>`;
+  const venc=(v,hoy)=>v&&v<hoy?' <span class="chip venc">vencido</span>':'';
+
+  /* extras manuales que no están en datt (se recuerdan en este navegador) */
+  const EXTRA_KEY='prevision.extras';
+  const leerExtras=()=>{try{const v=JSON.parse(localStorage.getItem(EXTRA_KEY)); if(Array.isArray(v)) return v;}catch(e){} return [{clave:'vs',nombre:'VIZCAÍNO STONE',importe:2356.83}];};
+  const guardarExtras=v=>{try{localStorage.setItem(EXTRA_KEY,JSON.stringify(v))}catch(e){}};
+
+  window.pintarPrevision=function(el,t,opciones){
+    opciones=opciones||{};
+    let extras=leerExtras();
+    const abiertos=new Set();
+    const dibujar=()=>{
+      el.querySelectorAll('details[open][data-k]').forEach(d=>abiertos.add(d.dataset.k));
+      el.querySelectorAll('details[data-k]:not([open])').forEach(d=>abiertos.delete(d.dataset.k));
+      const p=calcularPrevision(t,extras), hoy=p.hoy;
+      const blk=(k,titulo,n,total,cuerpo,abierto)=>`<details class="pv-blk" data-k="${k}"${(abiertos.has(k)||(abierto&&!abiertos.size))?' open':''}><summary><span class="t">${titulo}<span class="n">${n}</span></span><span class="s">${eur(total)}</span></summary>${cuerpo}</details>`;
+
+      const ventas=tabla([{t:'Nº factura'},{t:'Cliente'},{t:'Fecha'},{t:'Importe',n:1}],
+        p.ventas.map(v=>`<tr><td>${esc(v.numero)}</td><td class="nm">${esc(v.nombre)}</td><td class="f">${fd(v.fecha)}</td><td class="num">${eur(v.importe)}</td></tr>`),p.tVentas);
+      const cartera=tabla([{t:'Vence'},{t:'Cliente'},{t:'Factura'},{t:'Importe',n:1}],
+        p.cartera.map(v=>`<tr><td class="f">${fd(v.vence)||'—'}</td><td class="nm">${esc(v.nombre)} <span class="chip">${esc(v.tipo)}</span>${v.remesado?'<span class="chip">remesado</span>':''}${venc(v.vence,hoy)}</td><td>${esc(v.numero)}</td><td class="num">${eur(v.importe)}</td></tr>`),p.tCartera);
+      const bancos=`<div class="pv-tw pv-bancos"><table><thead><tr><th>Cuenta</th><th>Saldo a</th><th class="num">Importe</th></tr></thead><tbody>${p.bancos.map(b=>`<tr><td>${esc(b.nombre)}${b.manual?' <span class="chip">a mano</span>':''}</td><td class="f">${b.manual?'—':fd(b.fecha)}</td><td class="num">${b.manual?`<input id="pv-x-${esc(b.clave)}" data-clave="${esc(b.clave)}" inputmode="decimal" value="${num(b.importe)}" aria-label="Saldo ${esc(b.nombre)}">`:eur(b.importe)}</td></tr>`).join('')}</tbody><tfoot><tr><td colspan="2">Total</td><td class="num">${eur(p.tBancos)}</td></tr></tfoot></table></div><div class="pv-nota">Santander y Unicaja salen del último saldo apuntado en datt. Vizcaíno Stone no está en datt: escribe el saldo y pulsa Intro.</div>`;
+      const compras=tabla([{t:'Nº factura'},{t:'Proveedor'},{t:'Fecha'},{t:'Importe',n:1}],
+        p.compras.map(v=>`<tr><td>${esc(v.numero)}</td><td class="nm">${esc(v.nombre)}</td><td class="f">${fd(v.fecha)}</td><td class="num">${eur(v.importe)}</td></tr>`),p.tCompras);
+      const pagares=p.pagaresMes.map(m=>`<details class="pv-mes" data-k="m-${m.clave}"${abiertos.has('m-'+m.clave)?' open':''}><summary><span>${m.nombre} <span class="chip">${m.lineas.length}</span></span><span class="s">${eur(m.importe)}</span></summary>${tabla([{t:'Vence'},{t:'Proveedor'},{t:'Factura'},{t:'Importe',n:1}],m.lineas.map(v=>`<tr><td class="f">${fd(v.vence)||'—'}</td><td class="nm">${esc(v.nombre)} <span class="chip">${esc(v.tipo)}</span>${venc(v.vence,hoy)}</td><td>${esc(v.numero)}</td><td class="num">${eur(v.importe)}</td></tr>`))}</details>`).join('');
+
+      el.innerHTML=`
+        <div class="pv-top"><h2>Previsión de tesorería</h2><span class="pv-fecha">${opciones.origen||('Datos de datt · '+fd(hoy))}</span></div>
+        <div class="pv-resumen">
+          <div class="pv-kpi"><span class="lbl">Total ventas</span><span class="val">${eur(p.totalVentas)}</span><span class="det">Facturas ${eur(p.tVentas)} · Pagarés ${eur(p.tCartera)} · Bancos ${eur(p.tBancos)}</span></div>
+          <div class="pv-kpi"><span class="lbl">Total compras</span><span class="val">${eur(p.totalCompras)}</span><span class="det">Facturas ${eur(p.tCompras)} · Pagarés ${eur(p.tPagares)}</span></div>
+          <div class="pv-kpi difer"><span class="lbl">Diferencia</span><span class="val ${p.diferencia>=0?'pos':'neg'}">${eur(p.diferencia)}</span><span class="det">Total ventas − total compras</span></div>
+        </div>
+        <div class="pv-cols">
+          <section class="pv-col"><h3>Ventas</h3>
+            ${blk('ventas','Facturas pendientes de cobro',p.ventas.length,p.tVentas,ventas)}
+            ${blk('cartera','Pagarés recibidos',p.cartera.length,p.tCartera,cartera)}
+            ${blk('bancos','Bancos',p.bancos.length,p.tBancos,bancos,true)}
+          </section>
+          <section class="pv-col"><h3>Compras</h3>
+            ${blk('compras','Facturas de proveedor pendientes',p.compras.length,p.tCompras,compras)}
+            ${blk('pagares','Pagarés a pagar por mes',p.pagaresMes.reduce((s,m)=>s+m.lineas.length,0),p.tPagares,pagares,true)}
+          </section>
+        </div>`;
+      el.querySelectorAll('.pv-bancos input').forEach(inp=>{
+        inp.addEventListener('change',()=>{
+          const v=parseFloat(inp.value.replace(/\./g,'').replace(',','.'));
+          const x=extras.find(e=>e.clave===inp.dataset.clave); if(x&&!isNaN(v)){x.importe=v; guardarExtras(extras); dibujar(); el.querySelector('#'+inp.id)?.focus();}
+        });
+      });
+    };
+    dibujar();
+  };
+})();
+</script>
+<!-- =================== FIN PREVISIÓN DE TESORERÍA =================== -->
