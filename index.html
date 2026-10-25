@@ -660,8 +660,39 @@ function overBudgetInfo(workId) {
   return { over: false, text: '' };
 }
 function isOverBudget(workId) { return overBudgetInfo(workId).over; }
+/* ---------- PRESUPUESTOS DENTRO DE LA OBRA ----------
+   Un presupuesto es una fila de «works» con obraId = la obra a la que pertenece (como una columna «Obra madre» en Excel).
+   Las filas sin obraId son obras. Si la obra madre no existe, el presupuesto se ve como obra suelta para no perderlo. */
+const isBudgetDoc = w => !!(w && w.obraId && w.obraId !== w.id && byId(state.works, w.obraId));
+function obraBudgets(id) { return state.works.filter(w => w.obraId === id && w.id !== id).sort((a, b) => (a.offerDate || '').localeCompare(b.offerDate || '')); }
+function familyIds(id) { return [id, ...obraBudgets(id).map(b => b.id)]; }
+const sumFam = (id, f) => round2(familyIds(id).reduce((s, x) => s + num(f(x)), 0));
+const famOver = id => familyIds(id).some(isOverBudget);
+function budgetLabel(w) { return (w.budgetNumber ? 'Presupuesto ' + w.budgetNumber : w.name) + (w.offerDate ? ' · ' + fmtDate(w.offerDate) : ''); }
+const nPptoPill = id => { const n = obraBudgets(id).length; return n ? ` <span class="pill pill-neutral">${n} presupuesto${n > 1 ? 's' : ''}</span>` : ''; };
 
+/* ---------- PLAZOS EXACTOS (fraccionamiento de Hacienda) ----------
+   Un gasto fijo puede llevar su cuadro de plazos, como un Excel: Fecha | Principal | Recargo | Intereses.
+   Entonces cada mes se paga exactamente lo de su fila, en su fecha, en vez de una cuota igual todos los meses. */
+const hasPlan = e => !!e && Array.isArray(e.installments) && e.installments.length > 0;
+const instTotal = p => round2(num(p.principal) + num(p.surcharge) + num(p.interest));
+const planInMonth = (e, m) => hasPlan(e) ? e.installments.filter(p => /^\d{4}-\d{2}-\d{2}$/.test(p.date || '') && p.date.slice(0, 7) === m) : [];
+/* Fecha del cargo en un mes: la del plazo si la hay; si no, el mismo día del mes que el próximo vencimiento */
+function expenseDayIn(e, m) {
+  const p = planInMonth(e, m)[0]; if (p) return p.date;
+  const dim = dayjs(m + '-01').daysInMonth(), day = Math.min(dayjs(e.nextDate).isValid() ? dayjs(e.nextDate).date() : 1, dim);
+  return `${m}-${String(day).padStart(2, '0')}`;
+}
+/* Texto del plazo para que cuadre con la contabilidad: «plazo 3/12 (IVA 2.126,68 € + intereses 35,74 €)» */
+function planLabel(e, m) {
+  const ps = planInMonth(e, m); if (!ps.length) return '';
+  const k = e.installments.indexOf(ps[0]) + 1, pr = ps.reduce((s, p) => s + num(p.principal), 0), rc = ps.reduce((s, p) => s + num(p.surcharge), 0), it = ps.reduce((s, p) => s + num(p.interest), 0);
+  return ` · plazo ${k}/${e.installments.length} (principal ${fmtMoney(pr)}${rc ? ' + recargo ' + fmtMoney(rc) : ''} + intereses ${fmtMoney(it)})`;
+}
+/* Coste financiero del mes (intereses + recargos de los plazos): es gasto; el principal del IVA no lo es */
+const planFinCostMonth = m => state.fixedExpenses.filter(hasPlan).reduce((s, e) => s + planInMonth(e, m).reduce((t, p) => t + num(p.interest) + num(p.surcharge), 0), 0);
 function expenseOccursInMonth(exp, mKey) {
+  if (hasPlan(exp)) return planInMonth(exp, mKey).length > 0;
   if (!exp.nextDate) return false;
   const anchor = dayjs(exp.nextDate).startOf('month');
   const target = dayjs(mKey + '-01');
@@ -680,6 +711,7 @@ function expenseOccursInMonth(exp, mKey) {
 }
 function expenseMonthAmount(e, m) {
   if (!expenseOccursInMonth(e, m)) return 0;
+  if (hasPlan(e)) return round2(planInMonth(e, m).reduce((s, p) => s + instTotal(p), 0));
   const base = (e.category === 'impuesto' && e.autoIvaCalc) ? computeAutoIva(m) : Number(e.amount || 0);
   if (e.frequency === 'quincenal') return base * 2;
   if (e.frequency === 'semanal') {
@@ -712,11 +744,10 @@ function fixedCards(m) {
     const cuota = expenseMonthAmount(e, m), atr = expArrears(e, m), pag = expPaid(e.id, m);
     if (!cuota && !atr && !pag) return;
     const prev = cuota + atr, pend = Math.max(0, prev - pag);
-    const dim = dayjs(m + '-01').daysInMonth(), day = Math.min(dayjs(e.nextDate).isValid() ? dayjs(e.nextDate).date() : 1, dim);
-    const date = `${m}-${String(day).padStart(2, '0')}`;
+    const date = expenseDayIn(e, m);
     tP += prev; tG += pag; tD += pend;
     const st = pend <= 0.005 ? ['Pagado', 'pill-income'] : pag > 0 ? ['Parcial', 'pill-warn'] : ['Pendiente', 'pill-expense'];
-    rows.push({ date, html: `<tr><td class="mono">${fmtDate(date)}</td><td>${escapeHtml(e.concept)}</td><td class="num">${atr > 0.005 ? fmtMoney(atr) : '—'}</td><td class="num">${fmtMoney(prev)}</td><td class="num">${fmtMoney(pag)}</td><td class="num">${fmtMoney(pend)}</td><td><span class="pill ${st[1]}">${st[0]}</span></td><td>${pend > 0.005 ? `<button class="btn btn-sm" data-payexp="${e.id}" data-m="${m}" data-pend="${pend.toFixed(2)}">Pagar</button>` : ''}</td></tr>` });
+    rows.push({ date, html: `<tr><td class="mono">${fmtDate(date)}</td><td>${escapeHtml(e.concept)}<span class="muted">${escapeHtml(planLabel(e, m))}</span></td><td class="num">${atr > 0.005 ? fmtMoney(atr) : '—'}</td><td class="num">${fmtMoney(prev)}</td><td class="num">${fmtMoney(pag)}</td><td class="num">${fmtMoney(pend)}</td><td><span class="pill ${st[1]}">${st[0]}</span></td><td>${pend > 0.005 ? `<button class="btn btn-sm" data-payexp="${e.id}" data-m="${m}" data-pend="${pend.toFixed(2)}">Pagar</button>` : ''}</td></tr>` });
   });
   rows.sort((a, b) => a.date < b.date ? -1 : 1);
   const inM = d => d && String(d).slice(0, 7) === m, ev = [];
@@ -1454,7 +1485,7 @@ function renderClients() {
 function renderClientDetail(id) {
   const c = byId(state.clients, id);
   if (!c) { currentDetail = {type:null,id:null}; return render(); }
-  const works = state.works.filter(w=>w.clientId===id);
+  const works = state.works.filter(w=>w.clientId===id && !isBudgetDoc(w));
   const invs = state.invoicesOut.filter(i=>i.clientId===id).sort((a,b)=> (b.date||'').localeCompare(a.date||''));
   document.getElementById('main').innerHTML = `
     <div class="topbar">
@@ -1484,7 +1515,7 @@ function renderClientDetail(id) {
             <thead><tr><th>Obra</th><th>Estado</th><th>Presupuesto</th></tr></thead>
             <tbody>
               ${works.length===0?'<tr><td colspan="3" class="empty">Sin obras registradas.</td></tr>':''}
-              ${works.map(w=>`<tr data-wid="${w.id}"><td>${escapeHtml(w.name)}${isOverBudget(w.id)?' <span class="pill pill-critical">Sobrecoste</span>':''}</td><td><span class="pill pill-info">${escapeHtml(w.status)}</span></td><td class="num">${fmtMoney(workBudgetTotal(w.id))}</td></tr>`).join('')}
+              ${works.map(w=>`<tr data-wid="${w.id}"><td>${escapeHtml(w.name)}${nPptoPill(w.id)}${famOver(w.id)?' <span class="pill pill-critical">Sobrecoste</span>':''}</td><td><span class="pill pill-info">${escapeHtml(w.status)}</span></td><td class="num">${fmtMoney(sumFam(w.id, workBudgetTotal))}</td></tr>`).join('')}
             </tbody>
           </table></div>
         </div>
@@ -1571,6 +1602,7 @@ function remesaGroups() {
   return Object.values(g).sort((x, y) => x.date < y.date ? 1 : x.date > y.date ? -1 : 0);
 }
 function loanInfo(e) {
+  if (hasPlan(e)) { const today = todayISO(), rest = e.installments.filter(p => p.date >= today), last = e.installments[e.installments.length - 1]; return `${rest.length} de ${e.installments.length} plazos pendientes · último ${fmtDate(last.date)}`; }
   if (e.category !== 'prestamo') return '—';
   if (e.lastDate && dayjs(e.lastDate).isValid()) {
     let n = 0, m = dayjs().format('YYYY-MM'); const last = dayjs(e.lastDate).format('YYYY-MM');
@@ -1655,7 +1687,7 @@ function renderBanks() {
             <tr data-fid="${e.id}" style="cursor:pointer"><td>${escapeHtml(e.concept)}</td>
               <td style="white-space:nowrap">${fixedMonthCell(e)}</td>
               <td><span class="pill pill-neutral">${EXPENSE_CATEGORIES.find(c => c.id === e.category)?.label || e.category}</span></td>
-              <td class="num">${e.autoIvaCalc ? 'Automático' : fmtMoney(e.amount)}</td>
+              <td class="num">${e.autoIvaCalc ? 'Automático' : hasPlan(e) ? fmtMoney(e.installments.reduce((s, p) => s + instTotal(p), 0)) + ' <span class="muted">en plazos</span>' : fmtMoney(e.amount)}</td>
               <td class="muted">${FREQUENCIES.find(f => f.id === e.frequency)?.label || e.frequency}</td>
               <td class="mono">${fmtDate(e.nextDate)}</td>
               <td class="muted">${escapeHtml(bname(defBank(e.bank)))}</td>
@@ -1703,7 +1735,7 @@ function balModel() {
   const today = todayISO(), [from, to, label] = balRangeOf(), inR = d => isoOk(d) && d >= from && d <= to;
   const out = state.invoicesOut.filter(i => inR(i.date)), inn = state.invoicesIn.filter(i => inR(i.date));
   const sumB = arr => arr.reduce((s, i) => s + baseOf(i), 0), sumA = a => a.reduce((s, l) => s + num(l.amount), 0);
-  const gastosMes = m => state.fixedExpenses.filter(e => ['gasto', 'nomina'].includes(e.category || 'gasto') && !e.autoIvaCalc).reduce((s, e) => s + expenseMonthAmount(e, m), 0) + state.oneOffExpenses.filter(x => x.dueDate && x.dueDate.slice(0, 7) === m).reduce((s, x) => s + num(x.amount), 0);
+  const gastosMes = m => state.fixedExpenses.filter(e => ['gasto', 'nomina'].includes(e.category || 'gasto') && !e.autoIvaCalc).reduce((s, e) => s + expenseMonthAmount(e, m), 0) + planFinCostMonth(m) + state.oneOffExpenses.filter(x => x.dueDate && x.dueDate.slice(0, 7) === m).reduce((s, x) => s + num(x.amount), 0);
   const rows = monthsBetween(from, to).map(m => { const v = sumB(out.filter(i => i.date.slice(0, 7) === m)), c = sumB(inn.filter(i => i.date.slice(0, 7) === m)), g = gastosMes(m); return { m, ventas: v, compras: c, gastos: g, resultado: v - c - g }; });
   const ventas = sumB(out), compras = sumB(inn), gastos = rows.reduce((s, r) => s + r.gastos, 0), bruto = ventas - compras, resultado = bruto - gastos;
   const outL = allOutLines(), inL = allInLines(), pendOut = outL.filter(l => !l.collected), pendIn = inL.filter(l => !l.paid);
@@ -1856,7 +1888,7 @@ function renderBalance() {
       ${kpi('Facturado (sin IVA)', fmtMoney(M.ventas), `${state.invoicesOut.filter(i => isoOk(i.date) && i.date >= M.from && i.date <= M.to).length} facturas emitidas`)}
       ${kpi('Compras (sin IVA)', fmtMoney(M.compras), 'Facturas recibidas')}
       ${kpi('Beneficio bruto', fmtMoney(M.bruto), `Margen ${pct(M.margenPct)}`, M.bruto >= 0 ? G : RED)}
-      ${kpi('Gastos fijos y puntuales', '−' + fmtMoney(M.gastos), 'Nóminas, alquileres, etc.', 'color:#b3261e')}
+      ${kpi('Gastos fijos y puntuales', '−' + fmtMoney(M.gastos), 'Nóminas, alquileres, intereses de aplazamientos…', 'color:#b3261e')}
       ${kpi('Resultado operativo', fmtMoney(M.resultado), 'Antes de préstamos e impuestos', M.resultado >= 0 ? G : RED)}
       ${kpi('Pendiente de cobro', fmtMoney(M.pendOut), `Vencido: ${fmtMoney(M.vencOut)}`, 'color:#b7791f;font-weight:700')}
       ${kpi('Cobro medio', M.dso === null ? '—' : Math.round(M.dso) + ' días', 'Desde la factura hasta el cobro')}
@@ -2048,11 +2080,11 @@ const GLOSSARY_START = [
   { canonical: 'Alféizar', synonyms: 'vierteaguas', defaultUnit: 'ml', defaultThickness: 0, standardSizes: '' },
 ];
 function renderWorks() {
-  const rows = state.works.map(w => {
-    const facturado = workInvoicedBase(w.id);
-    const coste = workCostBase(w.id);
-    const budget = workBudgetTotal(w.id);
-    return { w, facturado, coste, budget, beneficio: facturado - coste, over: isOverBudget(w.id) };
+  const rows = state.works.filter(w => !isBudgetDoc(w)).map(w => {
+    const facturado = sumFam(w.id, workInvoicedBase);
+    const coste = sumFam(w.id, workCostBase);
+    const budget = sumFam(w.id, workBudgetTotal);
+    return { w, facturado, coste, budget, beneficio: facturado - coste, over: famOver(w.id), pptos: obraBudgets(w.id).map(b => [b.name, b.budgetNumber].join(' ')).join(' ') };
   });
   document.getElementById('main').innerHTML = `
     <div class="topbar"><div><h1>Obras</h1><div class="subtitle">Presupuesto, facturación y coste por obra · importes sin IVA · el coste sale del precio de compra de las partidas más lo imputado de facturas de proveedor</div></div>
@@ -2071,25 +2103,26 @@ function renderWorks() {
   const seed = document.getElementById('seedGloss'); if (seed) seed.onclick = async () => { for (const g of GLOSSARY_START) await db.collection('materialGlossary').add(g); showToast('Glosario inicial cargado: revísalo y corrígelo'); };
   document.querySelectorAll('[data-gid]').forEach(tr => tr.onclick = () => openEntityModal('glossaryItem', tr.dataset.gid));
   document.getElementById('addWork').onclick = () => openEntityModal('work');
-  setupListSearch('works', 'qWork', rows, r => [r.w.name, byId(state.clients, r.w.clientId)?.name, r.w.address, r.w.notes, r.w.foremanName, r.w.status].join(' '), r => '', r => r.w.name,
-    r => `<tr data-id="${r.w.id}" style="cursor:pointer"><td>${escapeHtml(r.w.name)}${r.over?' <span class="pill pill-critical">Sobrecoste</span>':''}</td><td class="muted">${escapeHtml(byId(state.clients,r.w.clientId)?.name||'—')}</td><td>${r.w.status?`<span class="pill pill-info">${escapeHtml(r.w.status)}</span>`:'<span class="muted">—</span>'}</td><td class="num">${fmtMoney(r.budget)}</td><td class="num">${fmtMoney(r.facturado)}</td><td class="num" style="${r.over?'color:var(--critical);font-weight:700':''}">${fmtMoney(r.coste)}</td><td class="num" style="color:${r.beneficio>=0?'var(--income)':'var(--expense)'}">${fmtMoney(r.beneficio)}</td></tr>`,
+  setupListSearch('works', 'qWork', rows, r => [r.w.name, byId(state.clients, r.w.clientId)?.name, r.w.address, r.w.notes, r.w.foremanName, r.w.status, r.pptos].join(' '), r => '', r => r.w.name,
+    r => `<tr data-id="${r.w.id}" style="cursor:pointer"><td>${escapeHtml(r.w.name)}${nPptoPill(r.w.id)}${r.over?' <span class="pill pill-critical">Sobrecoste</span>':''}</td><td class="muted">${escapeHtml(byId(state.clients,r.w.clientId)?.name||'—')}</td><td>${r.w.status?`<span class="pill pill-info">${escapeHtml(r.w.status)}</span>`:'<span class="muted">—</span>'}</td><td class="num">${fmtMoney(r.budget)}</td><td class="num">${fmtMoney(r.facturado)}</td><td class="num" style="${r.over?'color:var(--critical);font-weight:700':''}">${fmtMoney(r.coste)}</td><td class="num" style="color:${r.beneficio>=0?'var(--income)':'var(--expense)'}">${fmtMoney(r.beneficio)}</td></tr>`,
     id => { currentDetail = {type:'work', id}; render(); }, 7);
 }
 
 function renderWorkDetail(id) {
   const w = byId(state.works, id);
   if (!w) { currentDetail = {type:null,id:null}; return render(); }
-  const invsOut = state.invoicesOut.filter(i=>i.workId===id);
-  const allocsIn = workAllocs(id);
+  const esPpto = isBudgetDoc(w), madre = esPpto ? byId(state.works, w.obraId) : null, pptos = esPpto ? [] : obraBudgets(id), fam = esPpto ? [id] : familyIds(id);
+  const invsOut = state.invoicesOut.filter(i=>fam.includes(i.workId));
+  const allocsIn = fam.flatMap(workAllocs);
   const items = state.workBudgetItems.filter(i=>i.workId===id);
-  const facturado = workInvoicedBase(id);
-  const cd = workCostDetail(id), coste = cd.total;
-  const budget = workBudgetTotal(id);
-  const over = isOverBudget(id);
+  const facturado = round2(fam.reduce((s,x)=>s+workInvoicedBase(x),0));
+  const cd = workCostDetail(id), coste = round2(fam.reduce((s,x)=>s+workCostBase(x),0));
+  const budget = round2(fam.reduce((s,x)=>s+workBudgetTotal(x),0));
+  const over = esPpto ? isOverBudget(id) : famOver(id);
   const unitProfit = workUnitProfit(id);
   document.getElementById('main').innerHTML = `
     <div class="topbar">
-      <div><button class="link-btn" id="back">← Obras</button><h1 style="margin-top:6px">${escapeHtml(w.name)}</h1><div class="subtitle">Cliente: ${escapeHtml(byId(state.clients,w.clientId)?.name||'—')}${w.address?` · Dirección: ${escapeHtml(w.address)}`:''}${w.foremanName||w.foremanPhone?` · Encargado: ${escapeHtml([w.foremanName,w.foremanPhone].filter(Boolean).join(' · '))}`:''}</div></div>
+      <div><button class="link-btn" id="back">${esPpto ? '← Obra: ' + escapeHtml(madre.name) : '← Obras'}</button><h1 style="margin-top:6px">${escapeHtml(w.name)}</h1>${esPpto ? `<div class="subtitle"><span class="pill pill-info">Presupuesto</span> de la obra <strong>${escapeHtml(madre.name)}</strong>${w.offerDate ? ' · fecha ' + fmtDate(w.offerDate) : ''}</div>` : ''}<div class="subtitle">Cliente: ${escapeHtml(byId(state.clients,w.clientId)?.name||'—')}${w.address?` · Dirección: ${escapeHtml(w.address)}`:''}${w.foremanName||w.foremanPhone?` · Encargado: ${escapeHtml([w.foremanName,w.foremanPhone].filter(Boolean).join(' · '))}`:''}</div></div>
       <div style="display:flex; gap:8px">
         <button class="btn" id="printEnv">Imprimir sobre</button>
         <button class="btn" id="dlEnv">Descargar sobre</button>
@@ -2105,8 +2138,15 @@ function renderWorkDetail(id) {
       <div class="kpi"><div class="label">Beneficio actual (sin IVA)</div><div class="value" style="color:${facturado-coste>=0?'var(--income)':'var(--expense)'}">${fmtMoney(facturado-coste)}</div></div>
       ${unitProfit.n?`<div class="kpi"><div class="label">Beneficio por partidas (venta − compra) × cantidad</div><div class="value" style="color:${unitProfit.total>=0?'var(--income)':'var(--expense)'}">${fmtMoney(unitProfit.total)}</div></div>`:''}
     </div>
+    ${esPpto ? '' : `<div class="card">
+      <div class="card-head"><h2>Presupuestos de esta obra</h2><button class="btn btn-sm" id="addPpto">+ Presupuesto</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Presupuesto</th><th>Fecha</th><th>Partidas</th><th>Importe</th><th>Estado</th></tr></thead>
+        <tbody>${pptos.length === 0 ? '<tr><td colspan="5" class="empty">Esta obra no tiene presupuestos aparte.</td></tr>' : pptos.map(b => `<tr data-ppto="${b.id}" style="cursor:pointer"><td>${escapeHtml(b.budgetNumber ? 'Nº ' + b.budgetNumber : b.name)}</td><td class="mono">${fmtDate(b.offerDate)}</td><td class="num">${state.workBudgetItems.filter(i => i.workId === b.id).length}</td><td class="num">${fmtMoney(workBudgetTotal(b.id))}</td><td>${b.status ? `<span class="pill pill-info">${escapeHtml(b.status)}</span>` : '—'}</td></tr>`).join('')}</tbody>
+      </table></div>
+      ${pptos.length ? '<div class="muted" style="font-size:12px;margin-top:6px">Las cifras de arriba (presupuesto, facturado, coste) suman la obra y todos sus presupuestos.</div>' : ''}
+    </div>`}
     <div class="card"><div class="muted" style="font-size:12.5px">
-      <strong>Cómo sale el coste:</strong>
+      <strong>Cómo sale el coste${pptos.length ? ' (solo las partidas propias de la obra; cada presupuesto tiene el suyo)' : ''}:</strong>
       ${cd.usaTarifa
         ? `material según precio de compra de ${cd.nConCoste} partida(s) <strong>${fmtMoney(cd.partidas)}</strong>`
         : `material según facturas de proveedor imputadas <strong>${fmtMoney(cd.material)}</strong> (ninguna partida tiene precio de compra)`}
@@ -2133,7 +2173,9 @@ function renderWorkDetail(id) {
       </table></div>
     </div>
   `;
-  document.getElementById('back').onclick = () => { currentDetail = {type:null,id:null}; render(); };
+  document.getElementById('back').onclick = () => { currentDetail = esPpto ? {type:'work', id:madre.id} : {type:null,id:null}; render(); };
+  const ap = document.getElementById('addPpto'); if (ap) ap.onclick = () => openEntityModal('work', null, { clientId: w.clientId, obraId: id, status: 'Presupuestada', offerDate: todayISO(), name: 'PPTO · ' + w.name });
+  document.querySelectorAll('[data-ppto]').forEach(tr => tr.onclick = () => { currentDetail = {type:'work', id:tr.dataset.ppto}; render(); });
   document.getElementById('printEnv').onclick = () => printEnvelope(w);
   document.getElementById('dlEnv').onclick = () => downloadEnvelope(w);
   document.getElementById('editW').onclick = () => openEntityModal('work', id);
@@ -2249,33 +2291,117 @@ function ivaQuarterNet(qs, qe) {
   return (state.invoicesOut.filter(inQ).reduce((s, i) => s + Number(i.amount || 0), 0) - state.invoicesIn.filter(inQ).reduce((s, i) => s + Number(i.amount || 0), 0)) * 21 / 121;
 }
 const ivaQId = (y, q) => `${y}-${q + 1}T`;
-function ivaSplitCreate({ y, q, total, n, first, bank }) {
-  const per = round2(total / n), lastD = dayjs(first).add(n - 1, 'month').format('YYYY-MM-DD'), diff = round2(total - per * n);
-  return db.collection('fixedExpenses').add({ concept: `IVA ${q + 1}T ${y} fraccionado (${n} plazos)`, amount: per, category: 'impuesto', frequency: 'mensual', nextDate: first, lastDate: lastD, bank: bank || '', paymentMethod: 'Domiciliado', ivaQuarter: ivaQId(y, q), notes: `Total fraccionado ${fmtMoney(total)} en ${n} plazos de ${fmtMoney(per)}${diff ? ' (diferencia de redondeo ' + fmtMoney(diff) + ')' : ''}.` });
+/* Lee el cuadro de plazos pegado del Anexo I de Hacienda: en cada fila los importes van antes de la fecha de vencimiento
+   (principal, recargo, total deuda, intereses, total del plazo, fecha). Da igual si al copiar del PDF salen en una línea o en varias. */
+function parsePlanText(txt) {
+  const rows = [], re = /(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})|-?\d{1,3}(?:\.\d{3})*,\d{2}/g;
+  const toNum = t => Number(t.replace(/\./g, '').replace(',', '.'));
+  let buf = [], m;
+  while ((m = re.exec(String(txt || '')))) {
+    if (m[3]) {
+      const n = buf; buf = [];
+      if (n.length < 2) continue;
+      const date = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+      let principal = 0, surcharge = 0, interest = 0;
+      if (n.length >= 5) { const k = n.slice(-5); principal = k[0]; surcharge = k[1]; interest = k[3]; }
+      else if (n.length === 4) { principal = n[0]; surcharge = n[1]; interest = n[2]; }
+      else { principal = n[0]; interest = n[1]; }
+      rows.push({ date, principal, surcharge, interest });
+    } else buf.push(toNum(m[0]));
+  }
+  return rows.sort((a, b) => a.date < b.date ? -1 : 1);
 }
-function openIvaSplit() {
-  const t = dayjs(), done = new Set(state.fixedExpenses.map(e => e.ivaQuarter).filter(Boolean)), qs = [];
-  for (let y = t.year() - 1; y <= t.year(); y++) for (let q = 0; q < 4; q++) { const a = dayjs(new Date(y, q * 3, 1)), b = a.add(2, 'month').endOf('month'); qs.push({ y, q, id: ivaQId(y, q), label: `${q + 1}T ${y}`, a, b, net: Math.max(0, ivaQuarterNet(a, b)), past: !b.isAfter(t, 'day') }); }
-  const def = qs.filter(x => x.past && !done.has(x.id)).pop() || qs[0];
+/* Reparto a partes iguales (solo si aún no hay resolución): mismo día cada mes y el redondeo va al último plazo */
+function equalPlan(total, n, first) {
+  const per = round2(total / n), rows = [];
+  for (let k = 0; k < n; k++) rows.push({ date: dayjs(first).add(k, 'month').format('YYYY-MM-DD'), principal: k === n - 1 ? round2(total - per * (n - 1)) : per, surcharge: 0, interest: 0 });
+  return rows;
+}
+function openIvaSplit(editId) {
+  const t = dayjs(), editing = editId ? byId(state.fixedExpenses, editId) : null, qs = [];
+  for (let y = t.year() - 1; y <= t.year(); y++) for (let q = 0; q < 4; q++) { const a = dayjs(new Date(y, q * 3, 1)), b = a.add(2, 'month').endOf('month'); qs.push({ y, q, id: ivaQId(y, q), label: `${q + 1}T ${y}`, net: Math.max(0, ivaQuarterNet(a, b)), past: !b.isAfter(t, 'day') }); }
+  const byQ = id => state.fixedExpenses.find(e => e.ivaQuarter === id);
+  let qId = editing?.ivaQuarter || (qs.filter(x => x.past).pop() || qs[0]).id;
+  if (editing && editing.ivaQuarter && !qs.some(x => x.id === editing.ivaQuarter)) { const [yy, qq] = editing.ivaQuarter.split('-'); qs.unshift({ y: +yy, q: parseInt(qq) - 1, id: editing.ivaQuarter, label: `${qq} ${yy}`, net: 0, past: true }); }
+  let rows = hasPlan(editing) ? editing.installments.map(p => ({ ...p })) : [];
+  const exp0 = editing?.expediente || '', bank0 = editing?.bank || mainBankId();
   const root = document.getElementById('modalRoot');
-  root.innerHTML = `<div class="modal-overlay" id="ivaOv"><div class="modal" style="max-width:420px"><h3>Fraccionar el IVA de un trimestre</h3>
-    <div class="form-row"><label>Trimestre</label><select id="ivaQ">${qs.map(x => `<option value="${x.id}" ${x.id === def.id ? 'selected' : ''} ${done.has(x.id) ? 'disabled' : ''}>${x.label}${done.has(x.id) ? ' (ya fraccionado)' : ''}</option>`).join('')}</select></div>
-    <div class="form-row"><label>Importe total a fraccionar (€)</label><input type="number" step="0.01" id="ivaT" value="${round2(def.net)}"></div>
-    <div class="form-row"><label>Número de plazos mensuales</label><input type="number" id="ivaN" value="6" min="2" max="36"></div>
-    <div class="form-row"><label>Fecha del primer pago</label><input type="date" id="ivaF" value="${t.add(1, 'month').date(5).format('YYYY-MM-DD')}"></div>
-    <div class="form-row"><label>Banco donde se domicilia</label><select id="ivaB">${bankOptions(true).map(o => `<option value="${escapeHtml(o.value)}" ${o.value === mainBankId() ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}</select></div>
-    <div class="muted" id="ivaR" style="margin:6px 0"></div>
-    <div class="muted" style="font-size:12px">Se crea un gasto fijo mensual de impuesto, con forma de pago domiciliado, y ese trimestre deja de salir como un único pago de IVA en las previsiones. Para deshacerlo, borra ese gasto fijo.</div>
-    <div class="modal-actions"><button class="btn" id="ivaC">Cancelar</button><button class="btn btn-primary" id="ivaOk">Crear plazos</button></div></div></div>`;
-  const upd = () => { const T = Number(document.getElementById('ivaT').value) || 0, N = Math.max(1, Number(document.getElementById('ivaN').value) || 1); document.getElementById('ivaR').textContent = `${N} plazos de ${fmtMoney(round2(T / N))}`; };
-  document.getElementById('ivaQ').onchange = e => { const x = qs.find(v => v.id === e.target.value); document.getElementById('ivaT').value = round2(x.net); upd(); };
-  ['ivaT', 'ivaN'].forEach(id => document.getElementById(id).oninput = upd); upd();
+  const inp = 'padding:5px 6px;border:1px solid var(--border-strong);border-radius:4px;background:var(--bg);color:var(--ink);font-size:12.5px';
+  root.innerHTML = `<div class="modal-overlay" id="ivaOv"><div class="modal" style="max-width:760px"><h3>Fraccionamiento del IVA con Hacienda</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <div class="form-row" style="flex:1 1 140px"><label>Trimestre</label><select id="ivaQ">${qs.map(x => `<option value="${x.id}" ${x.id === qId ? 'selected' : ''}>${x.label}${byQ(x.id) && byQ(x.id).id !== editId ? ' (ya fraccionado: se sustituye)' : ''}</option>`).join('')}</select></div>
+      <div class="form-row" style="flex:1 1 180px"><label>Nº de expediente</label><input id="ivaExp" value="${escapeHtml(exp0)}" placeholder="p. ej. 042640346256W"></div>
+      <div class="form-row" style="flex:1 1 180px"><label>Banco donde se domicilia</label><select id="ivaB">${bankOptions(true).map(o => `<option value="${escapeHtml(o.value)}" ${o.value === bank0 ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}</select></div>
+    </div>
+    <details ${rows.length ? '' : 'open'} style="margin-bottom:10px"><summary style="cursor:pointer;font-weight:600">Pegar los plazos del Anexo I de la resolución</summary>
+      <div class="field-hint" style="margin:6px 0">Copia del PDF la tabla del Anexo I (puedes copiar la página entera, con títulos y totales: solo se leen las filas que acaban en fecha) y pégala aquí. Cada fila: principal, recargo, total deuda, intereses, total del plazo y fecha de vencimiento. Copia solo el Anexo I, no el Anexo II.</div>
+      <textarea id="ivaPaste" rows="4" style="width:100%;${inp}" placeholder="2.126,68 0,00 2.126,68 21,78 2.148,46 20-01-2027"></textarea>
+      <div style="margin-top:6px"><button type="button" class="btn btn-sm" id="ivaRead" style="font-weight:700">Leer plazos</button></div></details>
+    <details style="margin-bottom:10px"><summary style="cursor:pointer;font-weight:600;color:var(--ink-soft)">Aún no tengo la resolución: repartir a partes iguales (provisional)</summary>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:6px">
+        <label style="font-size:12px">Importe<br><input type="number" step="0.01" id="eqT" style="${inp};width:120px"></label>
+        <label style="font-size:12px">Plazos<br><input type="number" id="eqN" value="12" style="${inp};width:70px"></label>
+        <label style="font-size:12px">Primer pago<br><input type="date" id="eqF" value="${t.add(1, 'month').date(20).format('YYYY-MM-DD')}" style="${inp}"></label>
+        <button type="button" class="btn btn-sm" id="eqGo">Generar</button></div>
+      <div class="field-hint">Sin intereses: cuando llegue la resolución, pega sus plazos y se sustituyen.</div></details>
+    <div class="table-wrap"><table><thead><tr><th>#</th><th>Vencimiento</th><th style="text-align:right">Principal (IVA)</th><th style="text-align:right">Recargo</th><th style="text-align:right">Intereses</th><th style="text-align:right">Total plazo</th><th></th></tr></thead><tbody id="ivaRows"></tbody></table></div>
+    <div style="margin-top:6px"><button type="button" class="btn btn-sm" id="ivaAdd">+ Plazo</button></div>
+    <div id="ivaSum" style="margin-top:10px;font-size:13px"></div>
+    <div class="muted" style="font-size:12px;margin-top:8px">Cada plazo se carga en su fecha exacta y por su total. En el balance solo cuentan como gasto los intereses y el recargo, en el mes en que se pagan; el principal es el IVA que ya se cobró a los clientes. Ese trimestre deja de salir como un único pago de IVA. Para deshacerlo, borra este gasto fijo en Bancos.</div>
+    <div class="modal-actions">${editing ? '<button class="btn btn-danger" id="ivaDel" style="margin-right:auto">Eliminar</button>' : ''}<button class="btn" id="ivaC">Cancelar</button><button class="btn btn-primary" id="ivaOk">Guardar plazos</button></div></div></div>`;
+  const qObj = () => qs.find(v => v.id === document.getElementById('ivaQ').value);
+  const sums = () => rows.reduce((a, p) => ({ pr: a.pr + num(p.principal), rc: a.rc + num(p.surcharge), it: a.it + num(p.interest), tt: a.tt + instTotal(p) }), { pr: 0, rc: 0, it: 0, tt: 0 });
+  const paintSum = () => {
+    const s = sums(), q = qObj();
+    document.getElementById('ivaSum').innerHTML = rows.length ? `<strong>${rows.length} plazos</strong> · principal <strong class="mono">${fmtMoney(s.pr)}</strong> · recargo <strong class="mono">${fmtMoney(s.rc)}</strong> · intereses <strong class="mono">${fmtMoney(s.it)}</strong> · total a pagar <strong class="mono">${fmtMoney(s.tt)}</strong>
+      ${q && q.net ? `<div class="muted" style="margin-top:3px">Como referencia, el IVA del ${q.label} según las facturas del panel sale ${fmtMoney(q.net)}: si no coincide con el principal, manda la resolución de Hacienda.</div>` : ''}` : '<span class="muted">Todavía no hay plazos: pégalos del Anexo I.</span>';
+    rows.forEach((p, k) => { const c = document.getElementById('ivaTot' + k); if (c) c.textContent = fmtMoney(instTotal(p)); });
+  };
+  const paintRows = () => {
+    rows.sort((a, b) => (a.date || '9') < (b.date || '9') ? -1 : 1);
+    document.getElementById('ivaRows').innerHTML = rows.map((p, k) => `<tr style="cursor:default"><td class="muted">${k + 1}</td>
+      <td><input type="date" data-pr="${k}" data-pf="date" value="${p.date || ''}" style="${inp}"></td>
+      ${['principal', 'surcharge', 'interest'].map(f => `<td style="text-align:right"><input type="number" step="0.01" data-pr="${k}" data-pf="${f}" value="${p[f] ?? 0}" style="${inp};width:105px;text-align:right"></td>`).join('')}
+      <td class="num" id="ivaTot${k}">${fmtMoney(instTotal(p))}</td><td><button type="button" class="link-btn" data-prdel="${k}" style="color:var(--expense)">✕</button></td></tr>`).join('') || '<tr><td colspan="7" class="empty">Sin plazos.</td></tr>';
+    document.querySelectorAll('[data-pr]').forEach(el => el.oninput = () => { const p = rows[+el.dataset.pr]; p[el.dataset.pf] = el.dataset.pf === 'date' ? el.value : num(el.value); paintSum(); });
+    document.querySelectorAll('[data-pr][data-pf="date"]').forEach(el => el.onchange = paintRows);
+    document.querySelectorAll('[data-prdel]').forEach(b => b.onclick = () => { rows.splice(+b.dataset.prdel, 1); paintRows(); });
+    paintSum();
+  };
+  paintRows();
+  document.getElementById('eqT').value = round2(qObj()?.net || 0);
+  document.getElementById('ivaQ').onchange = () => { document.getElementById('eqT').value = round2(qObj()?.net || 0); paintSum(); };
+  document.getElementById('ivaRead').onclick = () => {
+    const r = parsePlanText(document.getElementById('ivaPaste').value);
+    if (!r.length) return showToast('No he encontrado plazos: copia las filas de la tabla del Anexo I, con sus importes y fechas.');
+    rows = r; paintRows(); showToast(`${r.length} plazos leídos: revísalos con la resolución`);
+  };
+  document.getElementById('eqGo').onclick = () => {
+    const T = num(document.getElementById('eqT').value), N = Math.round(num(document.getElementById('eqN').value)), F = document.getElementById('eqF').value;
+    if (!(T > 0) || N < 2 || !F) return showToast('Indica el importe, al menos 2 plazos y la fecha del primer pago.');
+    rows = equalPlan(T, N, F); paintRows();
+  };
+  document.getElementById('ivaAdd').onclick = () => { const last = rows[rows.length - 1]; rows.push({ date: last?.date ? dayjs(last.date).add(1, 'month').format('YYYY-MM-DD') : '', principal: 0, surcharge: 0, interest: 0 }); paintRows(); };
   document.getElementById('ivaC').onclick = closeModal;
   document.getElementById('ivaOv').onclick = e => { if (e.target.id === 'ivaOv') closeModal(); };
+  const del = document.getElementById('ivaDel'); if (del) del.onclick = () => { closeModal(); confirmDelete('fixedExpenses', editId, editing.concept, render); };
   document.getElementById('ivaOk').onclick = async () => {
-    const x = qs.find(v => v.id === document.getElementById('ivaQ').value), total = Number(document.getElementById('ivaT').value) || 0, n = Math.round(Number(document.getElementById('ivaN').value) || 0), first = document.getElementById('ivaF').value;
-    if (!(total > 0) || n < 2 || !first) return showToast('Indica el importe, al menos 2 plazos y la fecha del primer pago.');
-    try { await ivaSplitCreate({ y: x.y, q: x.q, total, n, first, bank: document.getElementById('ivaB').value }); closeModal(); showToast(`IVA ${x.label} fraccionado en ${n} plazos`); } catch (e) { console.error(e); showToast('No se pudo guardar.'); }
+    const q = qObj(), plan = rows.map(p => ({ date: p.date, principal: round2(num(p.principal)), surcharge: round2(num(p.surcharge)), interest: round2(num(p.interest)) })).filter(p => p.date || instTotal(p));
+    if (plan.length < 1) return showToast('No hay plazos que guardar.');
+    if (plan.some(p => !/^\d{4}-\d{2}-\d{2}$/.test(p.date) || !(instTotal(p) > 0))) return showToast('Cada plazo necesita su fecha y un importe.');
+    plan.sort((a, b) => a.date < b.date ? -1 : 1);
+    const s = plan.reduce((a, p) => ({ pr: a.pr + p.principal, rc: a.rc + p.surcharge, it: a.it + p.interest }), { pr: 0, rc: 0, it: 0 });
+    const expd = document.getElementById('ivaExp').value.trim();
+    const data = { concept: `IVA ${q.label} fraccionado (${plan.length} plazos)${expd ? ' · exp. ' + expd : ''}`, category: 'impuesto', frequency: 'mensual', autoIvaCalc: false,
+      amount: instTotal(plan[0]), nextDate: plan[0].date, lastDate: plan[plan.length - 1].date, bank: document.getElementById('ivaB').value || '', paymentMethod: 'Domiciliado',
+      ivaQuarter: q.id, expediente: expd, installments: plan,
+      notes: `Principal ${fmtMoney(s.pr)} + recargo ${fmtMoney(s.rc)} + intereses ${fmtMoney(s.it)} = ${fmtMoney(s.pr + s.rc + s.it)}, en ${plan.length} plazos con las fechas de la resolución.` };
+    const target = editing && editing.ivaQuarter === q.id ? editing : (byQ(q.id) || editing);
+    try {
+      if (target) await db.collection('fixedExpenses').doc(target.id).update(data);
+      else await db.collection('fixedExpenses').add(data);
+      closeModal(); showToast(`IVA ${q.label}: ${plan.length} plazos guardados`);
+    } catch (e) { console.error(e); showToast('No se pudo guardar.'); }
   };
 }
 function ivaQuarterItems(today, end) {
@@ -2301,8 +2427,7 @@ function provisionItems(months, endOverride) {
     if (arr > 0.005) items.push({ date: dayjs(cm + '-01').subtract(1, 'day').format('YYYY-MM-DD'), kind: 'out', cat, label: `${e.concept} (atrasos)`, amount: arr, bank: defBank(e.bank) });
     months.forEach(m => {
       const pend = expenseMonthAmount(e, m) - expPaid(e.id, m); if (pend <= 0.005) return;
-      const dim = dayjs(m + '-01').daysInMonth(), day = Math.min(dayjs(e.nextDate).isValid() ? dayjs(e.nextDate).date() : 1, dim);
-      items.push({ date: `${m}-${String(day).padStart(2, '0')}`, kind: 'out', cat, label: e.concept, amount: pend, bank: defBank(e.bank) });
+      items.push({ date: expenseDayIn(e, m), kind: 'out', cat, label: e.concept + planLabel(e, m), amount: pend, bank: defBank(e.bank) });
     });
   });
   ivaQuarterItems(today, end).forEach(i => items.push(i));
@@ -2662,6 +2787,9 @@ const ENTITY_CONFIG = {
     fields: [
       { key:'clientId', label:'Cliente', type:'select', options: () => state.clients.map(c=>({value:c.id,label:c.name})), required:true },
       { key:'name', label:'Nombre de la obra', type:'text', required:true },
+      { key:'obraId', label:'¿Es un presupuesto de otra obra? Elige la obra a la que pertenece', type:'select', options: (data) => [{value:'',label:'— No: es una obra —'}, ...state.works.filter(x=>!isBudgetDoc(x) && (!data.clientId||x.clientId===data.clientId)).sort((a,b)=>a.name.localeCompare(b.name,'es')).map(x=>({value:x.id,label:x.name}))] },
+      { key:'budgetNumber', label:'Nº de presupuesto (si es un presupuesto)', type:'text' },
+      { key:'offerDate', label:'Fecha del presupuesto', type:'date' },
       { key:'address', label:'Dirección de la obra (para el sobre de envíos)', type:'text' },
       { key:'foremanName', label:'Encargado que recepciona las entregas', type:'text' },
       { key:'foremanPhone', label:'Teléfono del encargado', type:'text' },
@@ -2870,6 +2998,7 @@ const CASH = 'cash';
 const bankOptions = (withBlank = true) => [...(withBlank ? [{ value: '', label: '— Sin indicar —' }] : []), { value: CASH, label: 'Efectivo' }, ...state.bankAccounts.filter(b => !b.archived && !isCredit(b)).map(b => ({ value: b.id, label: b.name }))];
 let modalPresetKeys = [];
 function openEntityModal(type, id = null, presetData = {}) {
+  if (type === 'fixedExpense' && id && hasPlan(byId(state.fixedExpenses, id))) return openIvaSplit(id);
   const cfg = ENTITY_CONFIG[type];
   const existing = id ? byId(state[cfg.col], id) : null;
   modalIsNew = !existing; modalPresetKeys = Object.keys(presetData || {});
@@ -2952,10 +3081,11 @@ function renderModal(type, cfg, id) {
     <div class="modal-overlay" id="overlay">
       <div class="modal">
         <h3>${id ? 'Editar' : 'Nuevo'} · ${cfg.title}</h3>
-        ${id && (type === 'invoiceOut' || type === 'invoiceIn') ? invoiceEffectsBox(type, id) : ''}
+        ${id && (type === 'invoiceOut' || type === 'invoiceIn') ? invoiceEffectsBox(type, id) + invoicePayBox(type, id) : ''}
         <form id="entityForm">
           ${cfg.fields.map(f => {
             if (f.showIf && !f.showIf(modalDraft)) return '';
+            if (id && PAY_FIELDS.includes(f.key) && invoiceIsSplit(type, id)) return '';
             const val = modalDraft[f.key] ?? '';
             if (f.type === 'select') {
               let opts = resolveOptions(f);
@@ -2987,6 +3117,7 @@ function renderModal(type, cfg, id) {
   document.getElementById('overlay').onclick = (e) => { if (e.target.id === 'overlay') closeModal(); };
   document.getElementById('cancelBtn').onclick = closeModal;
   if (id) document.getElementById('deleteBtn').onclick = () => { closeModal(); confirmDelete(cfg.col, id, cfg.title, render); };
+  const opb = document.getElementById('openPays'); if (opb) opb.onclick = () => { closeModal(); openPaymentsModal(id, cfg.col); };
 
   root.querySelectorAll('[data-key]').forEach(el => {
     el.addEventListener('change', () => {
@@ -3054,8 +3185,20 @@ function invoiceEffectsBox(type, id) {
     <div style="font-weight:700;margin-bottom:4px">${isOut ? 'Cobrada con' : 'Pagada con'}</div>
     ${eff.map(l => `<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:space-between;padding:3px 0;border-top:1px dashed var(--border)"><span><strong>${escapeHtml(l.method)}</strong>${l.issuingBank ? ' · ' + escapeHtml(l.issuingBank) : ''}${l.effectNumber ? ' · nº ' + escapeHtml(l.effectNumber) : ''} · <strong>vence ${fmtDate(l.dueDate)}</strong></span><span class="mono">${fmtMoney(l.amount)} · <span class="muted">${st(l)}</span></span></div>`).join('')}
     ${isOut && pend.length && !eff.length ? '<div class="muted">Forma pactada con efecto, pero todavía no se ha recibido: anota abajo el banco emisor y el vencimiento del pagaré cuando llegue.</div>' : ''}
-    ${lines.some(l => !l._implicit) ? '<div class="muted" style="margin-top:4px">Repartida en varios cobros/pagos: se cambian con el botón «Pagos» de la ficha.</div>' : ''}
+
   </div>`;
+}
+/* Campos de «ya pagada / ya cobrada» de la factura: si está repartida en varios pagos se ocultan, porque mandan las líneas de pago */
+const PAY_FIELDS = ['paid', 'paidDate', 'paidBank', 'collected', 'collectedDate', 'collectedBank', 'negotiated'];
+function invoiceIsSplit(type, id) { return (type === 'invoiceOut' ? state.invoiceOutPayments : state.invoiceInPayments).some(p => p.invoiceId === id); }
+/* Recuadro en la ficha de la factura: cuánto se ha pagado y botón para pagar o ver los pagos */
+function invoicePayBox(type, id) {
+  const isOut = type === 'invoiceOut', inv = byId(state[isOut ? 'invoicesOut' : 'invoicesIn'], id); if (!inv) return '';
+  const K = payKeys(isOut), ls = isOut ? outLines(inv) : inLines(inv), done = round2(ls.filter(l => l[K.done]).reduce((s, l) => s + num(l.amount), 0)), tot = round2(num(inv.amount));
+  if (!invoiceIsSplit(type, id) && !(done > 0) ) return `<div style="margin-bottom:12px"><button type="button" class="btn btn-sm" id="openPays">${isOut ? 'Cobrar' : 'Pagar'} o repartir en varios ${K.verb}s</button></div>`;
+  return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--surface-2);border-radius:var(--radius);padding:8px 12px;margin-bottom:14px;font-size:13px">
+    <span>${K.Past}: <strong class="mono">${fmtMoney(done)}</strong> de <span class="mono">${fmtMoney(tot)}</span>${done > tot + 0.005 ? ` · <strong style="color:var(--expense)">${fmtMoney(done - tot)} de más</strong>` : tot - done > 0.005 ? ` · pendiente <strong class="mono">${fmtMoney(tot - done)}</strong>` : ''}</span>
+    <button type="button" class="btn btn-sm" id="openPays" style="margin-left:auto">${isOut ? 'Cobros' : 'Pagos'}${invoiceIsSplit(type, id) ? ' (' + ls.length + ')' : ''}</button></div>`;
 }
 function closeModal() { document.getElementById('modalRoot').innerHTML = ''; modalDraft = {}; }
 
@@ -3081,114 +3224,188 @@ function confirmDelete(col, id, label, onDone) {
 }
 
 // ---------- PAGOS/COBROS PARCIALES ----------
-function openPaymentsModal(invoiceId, col) {
-  renderPaymentsModal(invoiceId, col);
+/* Regla: las líneas de una factura SIEMPRE suman el total de la factura (como en un Excel: Pagado + Pendiente = Total).
+   - Al anotar un pago, lo que se paga se descuenta de la línea «pendiente».
+   - Si falta dinero por repartir, se crea o se aumenta una línea pendiente.
+   Así nunca sale «pagado de más» por apuntar el resto dos veces. */
+function payKeys(isOut) { return isOut ? { done: 'collected', dDate: 'collectedDate', dBank: 'collectedBank', verb: 'cobro', Verb: 'Cobro', past: 'cobrado', Past: 'Cobrado' } : { done: 'paid', dDate: 'paidDate', dBank: 'paidBank', verb: 'pago', Verb: 'Pago', past: 'pagado', Past: 'Pagado' }; }
+function openPaymentsModal(invoiceId, col) { renderPaymentsModal(invoiceId, col); }
+/* Calcula los cambios para que las líneas cuadren con el total. lines = líneas como quedarán; keepId = línea que no se toca (la que se acaba de guardar) */
+function balanceOps(inv, lines, keepId, isOut) {
+  const K = payKeys(isOut), total = round2(num(inv.amount)), ops = [];
+  let diff = round2(total - lines.reduce((s, l) => s + num(l.amount), 0));
+  const pend = lines.filter(l => !l[K.done] && l.id && l.id !== keepId).sort((a, b) => (b.dueDate || '') < (a.dueDate || '') ? -1 : 1);
+  if (diff < -0.005) { /* sobra: se quita de lo pendiente, empezando por la última línea */
+    for (const l of pend) { if (diff >= -0.005) break; const a = round2(num(l.amount)), cut = Math.min(a, -diff); diff = round2(diff + cut); ops.push(a - cut <= 0.005 ? { del: l.id } : { id: l.id, patch: { amount: round2(a - cut) } }); }
+  } else if (diff > 0.005) { /* falta: se suma a la línea pendiente o se crea una */
+    const p = pend[pend.length - 1];
+    if (p) ops.push({ id: p.id, patch: { amount: round2(num(p.amount) + diff) } });
+    else ops.push({ add: { invoiceId: inv.id, amount: diff, date: todayISO(), dueDate: inv.dueDate || '', method: inv.paymentMethod || (isOut ? '' : 'Transferencia'), [isOut ? 'issuingBank' : 'note']: isOut ? '' : 'Resto pendiente', [K.done]: false, [K.dDate]: '', [K.dBank]: '' } });
+    diff = 0;
+  }
+  return { ops, excess: diff < -0.005 ? -diff : 0 };
 }
+async function runOps(payCol, ops) {
+  for (const o of ops) {
+    if (o.del) await db.collection(payCol).doc(o.del).delete();
+    else if (o.add) await db.collection(payCol).add(o.add);
+    else await db.collection(payCol).doc(o.id).update(o.patch);
+  }
+}
+const reopenPays = (invoiceId, col) => setTimeout(() => renderPaymentsModal(invoiceId, col), 200);
 function renderPaymentsModal(invoiceId, col) {
-  const isOut = col === 'invoicesOut';
+  const isOut = col === 'invoicesOut', K = payKeys(isOut);
   const inv = byId(state[col], invoiceId);
   if (!inv) { closeModal(); return; }
   const payCol = isOut ? 'invoiceOutPayments' : 'invoiceInPayments';
-  const lines = state[payCol].filter(p => p.invoiceId === invoiceId);
+  const lines = state[payCol].filter(p => p.invoiceId === invoiceId).sort((a, b) => (a[K.done] === b[K.done] ? ((a[K.dDate] || a.date || '') < (b[K.dDate] || b.date || '') ? -1 : 1) : a[K.done] ? -1 : 1));
   const usingCustom = lines.length > 0;
-  const totalAssigned = lines.reduce((s,l)=>s+Number(l.amount||0),0);
-  const remaining = Number(inv.amount||0) - totalAssigned;
+  const view = usingCustom ? lines : (isOut ? outLines(inv) : inLines(inv));
+  const total = round2(num(inv.amount)), done = round2(view.filter(l => l[K.done]).reduce((s, l) => s + num(l.amount), 0));
+  const assigned = round2(view.reduce((s, l) => s + num(l.amount), 0)), pending = round2(view.filter(l => !l[K.done]).reduce((s, l) => s + num(l.amount), 0));
+  const left = round2(total - done), mismatch = round2(total - assigned);
+  const bname = id => id === CASH ? 'Efectivo' : (byId(state.bankAccounts, id)?.name || '');
   const root = document.getElementById('modalRoot');
+  const kpi = (k, v, c) => `<div style="flex:1 1 120px;background:var(--surface-2);border-radius:var(--radius);padding:8px 10px"><div class="muted" style="font-size:12px">${k}</div><div class="mono" style="font-weight:700;${c || ''}">${fmtMoney(v)}</div></div>`;
   root.innerHTML = `
     <div class="modal-overlay" id="payOverlay">
-      <div class="modal" style="max-width:580px">
-        <h3>${isOut?'Cobros':'Pagos'} de la factura ${escapeHtml(inv.number||'(sin número)')}</h3>
-        <p class="field-hint">Importe total de la factura: <strong class="mono">${fmtMoney(inv.amount)}</strong></p>
-        ${!usingCustom ? `<p class="muted" style="font-size:13px">De momento se trata como un único ${isOut?'cobro':'pago'} (los datos que pusiste al crear la factura). Añade uno nuevo aquí para empezar a repartirla.</p>` : ''}
+      <div class="modal" style="max-width:640px">
+        <h3>${isOut ? 'Cobros' : 'Pagos'} de la factura ${escapeHtml(inv.number || '(sin número)')}</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">${kpi('Total factura', total)}${kpi(K.Past, done, 'color:var(--income)')}${kpi('Pendiente', Math.max(0, left), left > 0.005 ? 'color:var(--expense)' : '')}</div>
+        ${done > total + 0.005 ? `<div style="background:var(--expense-bg, #fde8e6);color:var(--expense);border-radius:var(--radius);padding:8px 10px;margin-bottom:10px;font-size:13px"><strong>Hay ${fmtMoney(done - total)} ${K.past}s de más.</strong> Pulsa <em>Editar</em> en la línea que sobra para corregir el importe, o <em>Quitar</em> para borrarla.</div>` : ''}
+        ${usingCustom && Math.abs(mismatch) > 0.005 && done <= total + 0.005 ? `<div style="background:var(--warn-bg, #fff4dc);border-radius:var(--radius);padding:8px 10px;margin-bottom:10px;font-size:13px">Las líneas suman ${fmtMoney(assigned)} y la factura ${fmtMoney(total)}. <button class="btn btn-sm" id="payFix">Cuadrar lo pendiente</button></div>` : ''}
         <div class="table-wrap"><table>
-          <thead><tr><th>Importe</th><th>Fecha</th><th>Vto.</th><th>Tipo</th><th>${isOut?'Banco':'Observ.'}</th><th>${isOut?'Cobrado':'Pagado'}</th><th></th></tr></thead>
+          <thead><tr><th style="text-align:right">Importe</th><th>Vto.</th><th>Forma</th><th>${isOut ? 'Banco emisor' : 'Observ.'}</th><th>Estado</th><th></th></tr></thead>
           <tbody>
-            ${lines.length===0?`<tr><td colspan="7" class="empty">Sin pagos parciales todavía.</td></tr>`:''}
-            ${lines.map(l=>`<tr>
-              <td class="num">${fmtMoney(l.amount)}</td><td class="mono">${fmtDate(l.date)}</td><td class="mono">${fmtDate(l.dueDate)}</td><td>${escapeHtml(l.method||'')}</td>
-              <td class="muted">${escapeHtml(isOut?(l.issuingBank||''):(l.note||''))}</td>
-              <td style="text-align:center"><input type="checkbox" data-payid="${l.id}" ${(isOut?l.collected:l.paid)?'checked':''}></td>
-              <td style="display:flex; gap:8px;"><button class="link-btn" data-editpay="${l.id}">Editar</button><button class="link-btn" data-delpay="${l.id}" style="color:var(--expense)">Quitar</button></td>
+            ${view.map(l => `<tr style="cursor:default">
+              <td class="num">${fmtMoney(l.amount)}</td><td class="mono">${fmtDate(l.dueDate)}</td><td>${escapeHtml(l.method || '—')}</td>
+              <td class="muted">${escapeHtml(isOut ? (l.issuingBank || '') : (l.note || ''))}</td>
+              <td>${l[K.done] ? `<span class="pill pill-income">${K.Past} ${fmtDate(l[K.dDate])}</span>${bname(l[K.dBank]) ? ' <span class="muted">· ' + escapeHtml(bname(l[K.dBank])) + '</span>' : ''}` : `<button class="btn btn-sm btn-primary" data-payline="${l.id || ''}">${isOut ? 'Cobrar' : 'Pagar'}</button>`}</td>
+              <td style="white-space:nowrap">${l.id ? `<button class="link-btn" data-editpay="${l.id}">Editar</button> · <button class="link-btn" data-delpay="${l.id}" style="color:var(--expense)">Quitar</button>` : (l[K.done] ? `<button class="link-btn" data-undoimpl="1">Desmarcar</button>` : '')}</td>
             </tr>`).join('')}
           </tbody>
         </table></div>
-        <div class="field-hint" style="margin:8px 0">Asignado: ${fmtMoney(totalAssigned)} · Sin asignar: <strong style="color:${Math.abs(remaining)>0.01?'var(--warn)':'var(--income)'}">${fmtMoney(remaining)}</strong></div>
-        <div class="modal-actions" style="justify-content:flex-start">
-          <button class="btn btn-sm" id="addPayLine">+ Añadir ${isOut?'cobro':'pago'} parcial</button>
+        <div class="field-hint" style="margin:8px 0">«${isOut ? 'Cobrar' : 'Pagar'}» anota la línea entera. Si solo se ${isOut ? 'cobra' : 'paga'} una parte, usa «Añadir ${K.verb} parcial»: lo que pongas se descuenta solo de lo pendiente.</div>
+        <div class="modal-actions" style="justify-content:flex-start;flex-wrap:wrap">
+          ${left > 0.005 ? `<button class="btn btn-primary" id="payAll">${isOut ? 'Cobrar' : 'Pagar'} todo lo pendiente (${fmtMoney(left)})</button>` : ''}
+          ${left > 0.005 ? `<button class="btn" id="addPayLine">+ Añadir ${K.verb} parcial</button>` : ''}
         </div>
         <div class="modal-actions"><button class="btn" id="payClose">Cerrar</button></div>
       </div>
     </div>`;
-  document.getElementById('payOverlay').onclick = (e) => { if (e.target.id==='payOverlay') closeModal(); };
+  document.getElementById('payOverlay').onclick = (e) => { if (e.target.id === 'payOverlay') closeModal(); };
   document.getElementById('payClose').onclick = closeModal;
-  document.getElementById('addPayLine').onclick = () => openPayLineForm(invoiceId, col, payCol, null, remaining > 0 ? remaining : inv.amount);
-  root.querySelectorAll('[data-payid]').forEach(chk => chk.onchange = async () => {
-    const field = isOut ? 'collected' : 'paid';
-    const dateField = isOut ? 'collectedDate' : 'paidDate';
-    const patch = { [field]: chk.checked };
-    patch[dateField] = chk.checked ? todayISO() : '';
-    await db.collection(payCol).doc(chk.dataset.payid).update(patch);
-    setTimeout(() => renderPaymentsModal(invoiceId, col), 150);
+  const defB = l => l?.[K.dBank] || (l?.method === 'Efectivo' ? CASH : mainBankId());
+  /* Marcar como pagadas/cobradas una o todas las líneas pendientes */
+  const markLines = (ls, title) => askBank({ title, defBank: defB(ls[0]), onCancel: () => renderPaymentsModal(invoiceId, col), onOk: async (bank, date) => {
+    try {
+      const patch = { [K.done]: true, [K.dDate]: date, [K.dBank]: bank };
+      if (!usingCustom) await db.collection(col).doc(invoiceId).update(patch);
+      else for (const l of ls) await db.collection(payCol).doc(l.id).update(patch);
+      showToast(`${K.Verb} anotado`);
+    } catch (e) { console.error(e); showToast('No se pudo guardar.'); }
+    reopenPays(invoiceId, col);
+  } });
+  const pa = document.getElementById('payAll'); if (pa) pa.onclick = () => {
+    const pl = view.filter(l => !l[K.done]);
+    /* si las líneas no llegan al total, primero se completa lo pendiente */
+    if (usingCustom && mismatch > 0.005) { const { ops } = balanceOps(inv, lines, null, isOut); runOps(payCol, ops).then(() => setTimeout(() => { const nl = state[payCol].filter(p => p.invoiceId === invoiceId && !p[K.done]); markLines(nl, `${isOut ? 'Cobrar' : 'Pagar'} ${fmtMoney(left)}`); }, 250)); return; }
+    markLines(pl, `${isOut ? 'Cobrar' : 'Pagar'} ${fmtMoney(left)}`);
+  };
+  root.querySelectorAll('[data-payline]').forEach(b => b.onclick = () => {
+    const l = b.dataset.payline ? view.find(x => x.id === b.dataset.payline) : view[0];
+    markLines([l], `${isOut ? 'Cobrar' : 'Pagar'} ${fmtMoney(l.amount)}`);
   });
+  const ui = root.querySelector('[data-undoimpl]'); if (ui) ui.onclick = async () => { await db.collection(col).doc(invoiceId).update({ [K.done]: false, [K.dDate]: '', [K.dBank]: '' }); reopenPays(invoiceId, col); };
+  const ap = document.getElementById('addPayLine'); if (ap) ap.onclick = () => openPayLineForm(invoiceId, col, payCol, null, left);
+  const fx = document.getElementById('payFix'); if (fx) fx.onclick = async () => {
+    const { ops, excess } = balanceOps(inv, lines, null, isOut);
+    try { await runOps(payCol, ops); showToast(excess ? `Cuadrado lo pendiente; siguen sobrando ${fmtMoney(excess)} ya ${K.past}s` : 'Pendiente cuadrado con el total'); } catch (e) { console.error(e); showToast('No se pudo guardar.'); }
+    reopenPays(invoiceId, col);
+  };
   root.querySelectorAll('[data-editpay]').forEach(b => b.onclick = () => openPayLineForm(invoiceId, col, payCol, b.dataset.editpay, 0));
   root.querySelectorAll('[data-delpay]').forEach(b => b.onclick = async () => {
-    await db.collection(payCol).doc(b.dataset.delpay).delete();
-    setTimeout(() => renderPaymentsModal(invoiceId, col), 150);
+    const gone = lines.find(l => l.id === b.dataset.delpay), rest = lines.filter(l => l.id !== b.dataset.delpay);
+    try {
+      await db.collection(payCol).doc(b.dataset.delpay).delete();
+      /* si se borra un pago hecho, su importe vuelve a pendiente; si se borra la última línea, la factura vuelve a ser de un solo pago */
+      if (rest.length && gone && gone[K.done]) await runOps(payCol, balanceOps(inv, rest, null, isOut).ops);
+      showToast('Línea quitada');
+    } catch (e) { console.error(e); showToast('No se pudo quitar.'); }
+    reopenPays(invoiceId, col);
   });
 }
 function openPayLineForm(invoiceId, col, payCol, existingId, suggestedAmount) {
-  const isOut = col === 'invoicesOut';
+  const isOut = col === 'invoicesOut', K = payKeys(isOut);
   const inv = byId(state[col], invoiceId);
   const existing = existingId ? state[payCol].find(p => p.id === existingId) : null;
   const draft = existing ? { ...existing } : {
-    amount: suggestedAmount > 0 ? suggestedAmount : inv.amount, date: todayISO(), dueDate: inv.dueDate,
-    method: inv.paymentMethod, issuingBank: '', note: '', remesado: false, remittanceBank: '',
-    collected: false, collectedDate: '', paid: false, paidDate: '',
+    amount: suggestedAmount > 0 ? round2(suggestedAmount) : inv.amount, date: todayISO(), dueDate: inv.dueDate || '',
+    method: inv.paymentMethod || (isOut ? '' : 'Transferencia'), issuingBank: '', note: '', remesado: false, remittanceBank: '',
+    [K.done]: true, [K.dDate]: todayISO(), [K.dBank]: inv.paymentMethod === 'Efectivo' ? CASH : mainBankId(),
   };
   const root = document.getElementById('modalRoot');
+  const bankSel = `<select id="lf_pbank">${bankOptions(true).map(o => `<option value="${escapeHtml(o.value)}" ${o.value === (draft[K.dBank] || '') ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}</select>`;
   root.innerHTML = `<div class="modal-overlay" id="lineOverlay"><div class="modal">
-    <h3>${existingId?'Editar':'Nuevo'} ${isOut?'cobro':'pago'} parcial</h3>
+    <h3>${existingId ? 'Editar' : 'Nuevo'} ${K.verb}${existingId ? '' : ' parcial'}</h3>
+    ${existingId ? '' : `<p class="field-hint">Pendiente ahora: <strong class="mono">${fmtMoney(suggestedAmount)}</strong>. Pon lo que se ha ${K.past}: se descuenta de lo pendiente y lo que quede sigue pendiente.</p>`}
     <form id="lineForm">
       <div class="form-row"><label>Importe (€)</label><input type="number" step="0.01" id="lf_amount" value="${draft.amount}"></div>
-      <div class="form-row"><label>Fecha</label><input type="date" id="lf_date" value="${draft.date}"></div>
-      <div class="form-row"><label>Forma de pago</label><select id="lf_method">${(isOut ? CLIENT_METHODS : PAYMENT_METHODS).map(p=>`<option ${p===draft.method?'selected':''}>${p}</option>`).join('')}</select></div>
-      <div class="form-row"><label>Vencimiento</label><input type="date" id="lf_due" value="${draft.dueDate||''}"></div>
-      <div class="form-row"><label>${isOut?'Banco emisor':'Observaciones'}</label><input id="lf_bank" value="${escapeHtml(isOut?(draft.issuingBank||''):(draft.note||''))}"></div>
-      <div class="form-row checkline"><input type="checkbox" id="lf_done" ${(isOut?draft.collected:draft.paid)?'checked':''}><label>Ya ${isOut?'cobrado':'pagado'}</label></div>
+      <div class="form-row"><label>Forma de pago</label><select id="lf_method">${(isOut ? CLIENT_METHODS : PAYMENT_METHODS).map(p => `<option ${p === draft.method ? 'selected' : ''}>${p}</option>`).join('')}</select></div>
+      <div class="form-row"><label>Vencimiento</label><input type="date" id="lf_due" value="${draft.dueDate || ''}"></div>
+      <div class="form-row"><label>${isOut ? 'Banco emisor' : 'Observaciones'}</label><input id="lf_bank" value="${escapeHtml(isOut ? (draft.issuingBank || '') : (draft.note || ''))}"></div>
+      <div class="form-row checkline"><input type="checkbox" id="lf_done" ${draft[K.done] ? 'checked' : ''}><label for="lf_done">Ya ${K.past}</label></div>
+      <div id="lf_doneBox" style="${draft[K.done] ? '' : 'display:none'}">
+        <div class="form-row"><label>Fecha de ${K.verb}</label><input type="date" id="lf_pdate" value="${draft[K.dDate] || draft.date || todayISO()}"></div>
+        <div class="form-row"><label>${isOut ? 'Cobrado en' : 'Pagado por'} (banco)</label>${bankSel}</div>
+      </div>
       <div class="modal-actions">
         <button type="button" class="btn" id="lineCancel">Cancelar</button>
         <button type="submit" class="btn btn-primary">Guardar</button>
       </div>
     </form>
   </div></div>`;
-  document.getElementById('lineOverlay').onclick = (e) => { if (e.target.id==='lineOverlay') renderPaymentsModal(invoiceId, col); };
+  document.getElementById('lf_done').onchange = e => { document.getElementById('lf_doneBox').style.display = e.target.checked ? '' : 'none'; };
+  document.getElementById('lineOverlay').onclick = (e) => { if (e.target.id === 'lineOverlay') renderPaymentsModal(invoiceId, col); };
   document.getElementById('lineCancel').onclick = () => renderPaymentsModal(invoiceId, col);
   document.getElementById('lineForm').onsubmit = async (e) => {
     e.preventDefault();
+    const amount = round2(num(document.getElementById('lf_amount').value));
+    if (!(amount > 0)) return showToast('Pon el importe.');
+    const done = document.getElementById('lf_done').checked;
     const data = {
-      invoiceId,
-      amount: Number(document.getElementById('lf_amount').value) || 0,
-      date: document.getElementById('lf_date').value,
+      invoiceId, amount,
+      date: existing?.date || todayISO(),
       dueDate: document.getElementById('lf_due').value,
       method: document.getElementById('lf_method').value,
+      [K.done]: done, [K.dDate]: done ? (document.getElementById('lf_pdate').value || todayISO()) : '', [K.dBank]: done ? document.getElementById('lf_pbank').value : '',
     };
     /* En pagarés, confirming y cheques la fecha de la línea es la de emisión del efecto (es la que enseña la pestaña Efectos) */
-    if (EFFECT_METHODS.includes(data.method)) data.emissionDate = existing && existing.emissionDate && existing.emissionDate !== existing.date ? existing.emissionDate : data.date;
-    const done = document.getElementById('lf_done').checked;
-    if (isOut) {
-      data.issuingBank = document.getElementById('lf_bank').value;
-      data.collected = done; data.collectedDate = done ? todayISO() : '';
-      data.remesado = draft.remesado || false; data.remittanceBank = draft.remittanceBank || '';
-    } else {
-      data.note = document.getElementById('lf_bank').value;
-      data.paid = done; data.paidDate = done ? todayISO() : '';
-    }
+    if (EFFECT_METHODS.includes(data.method)) data.emissionDate = existing && existing.emissionDate ? existing.emissionDate : (data[K.dDate] || data.date);
+    if (isOut) { data.issuingBank = document.getElementById('lf_bank').value; data.remesado = draft.remesado || false; data.remittanceBank = draft.remittanceBank || ''; }
+    else data.note = document.getElementById('lf_bank').value;
+    const others = state[payCol].filter(p => p.invoiceId === invoiceId && p.id !== existingId);
     try {
+      let ops = [];
+      if (!others.length && !existingId && !(isOut ? inv.collected : inv.paid)) {
+        /* primer pago parcial de una factura de un solo pago: el resto queda como línea pendiente */
+        ops = balanceOps(inv, [{ ...data, id: '__new' }], '__new', isOut).ops;
+      } else if (!others.length && !existingId) {
+        /* la factura estaba marcada entera como pagada: se pasa a líneas */
+        await db.collection(col).doc(invoiceId).update({ [K.done]: false });
+        ops = balanceOps(inv, [{ ...data, id: '__new' }], '__new', isOut).ops;
+      } else {
+        const after = [...others, { ...data, id: existingId || '__new' }];
+        ops = balanceOps(inv, after, existingId || '__new', isOut).ops;
+      }
+      const sum = round2(others.reduce((s, l) => s + num(l.amount), 0) + amount);
       if (existingId) await db.collection(payCol).doc(existingId).update(data);
       else await db.collection(payCol).add(data);
-      showToast('Guardado');
+      await runOps(payCol, ops);
+      const paidNow = round2([...others.filter(l => l[K.done]), ...(done ? [data] : [])].reduce((s, l) => s + num(l.amount), 0));
+      showToast(paidNow > num(inv.amount) + 0.005 ? `Ojo: ${K.past} ${fmtMoney(paidNow - num(inv.amount))} de más` : sum > num(inv.amount) + 0.005 ? 'Guardado: descontado de lo pendiente' : 'Guardado');
     } catch (err) { console.error(err); showToast('No se pudo guardar.'); }
-    setTimeout(() => renderPaymentsModal(invoiceId, col), 150);
+    reopenPays(invoiceId, col);
   };
 }
 
