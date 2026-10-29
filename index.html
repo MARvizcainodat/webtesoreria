@@ -119,6 +119,21 @@
 
   .split { display: grid; grid-template-columns: 300px 1fr; gap: 18px; align-items: start; }
   @media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+  /* fichas de cliente y proveedor: los datos arriba a todo el ancho (en columnas) y debajo las tarjetas de obras y facturas */
+  .split.stacked { grid-template-columns: minmax(0, 1fr); }
+  .split.stacked > * { min-width: 0; } /* que las tablas anchas hagan scroll dentro de su tarjeta y no ensanchen la página */
+  @media (max-width: 760px) { .hide-m { display: none !important; } .tight-m th, .tight-m td { padding-left: 4px !important; padding-right: 4px !important; font-size: 13px; } .tight-m .pill { padding: 2px 6px; font-size: 11px; } .tight-m .mono, .tight-m .num { font-size: 12.5px; } }
+  @media (max-width: 420px) { .split.stacked .card { padding-left: 12px; padding-right: 12px; } }
+  /* cajas de pagarés en «Pagarés agrupados»: en el portátil caben en una línea; en el móvil bajan solas */
+  .grp-pag { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; margin-bottom: 8px; }
+  .grp-pag label { display: block; font-size: 11px; color: var(--ink-faint); margin-bottom: 2px; }
+  .grp-pag > div { flex: 1 1 130px; min-width: 0; }
+  .grp-pag input { width: 100%; box-sizing: border-box; }
+  @media (max-width: 560px) { .split.stacked .contact-card { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 12px; } }
+  .split.stacked .contact-card { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 20px; }
+  .split.stacked .contact-card h2 { grid-column: 1 / -1; margin-bottom: 4px; }
+  .split.stacked .contact-card .field { margin-bottom: 6px; min-width: 0; overflow-wrap: anywhere; }
+  .split.stacked .contact-card .field.wide { grid-column: 1 / -1; }
   .contact-card .field { margin-bottom: 10px; }
   .contact-card .field .k { font-size: 11px; color: var(--ink-faint); }
   .contact-card .field .v { font-size: 13.5px; margin-top: 1px; }
@@ -1533,7 +1548,7 @@ function renderClientDetail(id) {
         <button class="btn btn-danger" id="delC">Eliminar</button>
       </div>
     </div>
-    <div class="split">
+    <div class="split stacked">
       <div class="card contact-card">
         <h2>Ficha</h2>
         <div class="field"><div class="k">Código de cliente</div><div class="v mono">${escapeHtml(c.code||'—')}</div></div>
@@ -1544,7 +1559,7 @@ function renderClientDetail(id) {
         <div class="field"><div class="k">Forma de pago habitual</div><div class="v"><span class="pill pill-neutral">${escapeHtml(c.paymentMethod||'—')}</span></div></div>
         <div class="field"><div class="k">Plazo de pago habitual</div><div class="v">${num(c.paymentTermDays)>0?num(c.paymentTermDays)+' días':PROV_TERM+' días <span class="muted">(provisional, sin revisar)</span>'}</div></div>
         <div class="field"><div class="k">Plataforma de facturación</div><div class="v">${escapeHtml(c.platformName||'—')}</div></div>
-        ${c.notes?`<div class="field"><div class="k">Notas</div><div class="v">${escapeHtml(c.notes)}</div></div>`:''}
+        ${c.notes?`<div class="field wide"><div class="k">Notas</div><div class="v">${escapeHtml(c.notes)}</div></div>`:''}
       </div>
       <div>
         <div class="card">
@@ -1559,15 +1574,15 @@ function renderClientDetail(id) {
         </div>
         <div class="card">
           <div class="card-head"><h2>Facturas emitidas</h2><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm" id="addGrp" title="Varios pagarés que pagan varias facturas a la vez">+ Pagarés agrupados</button><button class="btn btn-sm" id="addInv">+ Factura</button></div></div>
-          <div class="table-wrap"><table>
-            <thead><tr><th>Nº</th><th>Fecha</th><th>Obra</th><th>Vencimiento</th><th>Forma de pago</th><th>Importe</th><th>Estado</th><th></th></tr></thead>
+          <div class="table-wrap"><table class="tight-m">
+            <thead><tr><th>Nº</th><th class="hide-m">Fecha</th><th class="hide-m">Obra</th><th class="hide-m">Vencimiento</th><th class="hide-m">Forma de pago</th><th>Importe</th><th>Estado</th><th></th></tr></thead>
             <tbody>
               ${invs.length===0?'<tr><td colspan="8" class="empty">Sin facturas registradas.</td></tr>':''}
               ${invs.map(i=>{
                 const st = invoiceOutStatus(i);
                 const n = outLines(i).length;
                 const dm = linesDueMethod(outLines(i), 'collected');
-                return `<tr data-iid="${i.id}"><td class="mono">${escapeHtml(i.number||'—')}</td><td class="mono">${fmtDate(i.date)}</td><td class="muted">${escapeHtml(byId(state.works,i.workId)?.name||'—')}</td><td class="mono">${dm.due}</td><td>${escapeHtml(dm.method)}</td><td class="num">${fmtMoney(i.amount)}</td><td><span class="pill ${st.cls}">${st.label}</span></td><td><button class="link-btn" data-pay="${i.id}" data-paycol="invoicesOut">Pagos${n>1?' ('+n+')':''}</button></td></tr>`;
+                return `<tr data-iid="${i.id}"><td class="mono">${escapeHtml(i.number||'—')}</td><td class="mono hide-m">${fmtDate(i.date)}</td><td class="muted hide-m">${escapeHtml(byId(state.works,i.workId)?.name||'—')}</td><td class="mono hide-m">${dm.due}</td><td class="hide-m">${escapeHtml(dm.method)}</td><td class="num">${fmtMoney(i.amount)}</td><td><span class="pill ${st.cls}">${st.label}</span></td><td><button class="link-btn" data-pay="${i.id}" data-paycol="invoicesOut">Pagos${n>1?' ('+n+')':''}</button></td></tr>`;
               }).join('')}
             </tbody>
           </table></div>
@@ -1597,9 +1612,9 @@ function grpListHtml(clientId) {
   const rep = p => p.allocations.map(a => `${escapeHtml(byId(state.invoicesOut, a.invoiceId)?.number || '¿?')}: ${fmtMoney(a.amount)}`).join('<br>');
   return `<div class="card">
     <div class="card-head"><h2>Pagarés agrupados</h2></div>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Nº</th><th>Emisión</th><th>Vencimiento</th><th style="text-align:right">Importe</th><th>Facturas que paga</th><th>Estado</th><th></th></tr></thead>
-      <tbody>${ps.map(p => `<tr style="cursor:default"><td class="mono">${escapeHtml(p.method || 'Pagaré')}${p.effectNumber ? ' ' + escapeHtml(p.effectNumber) : ''}</td><td class="mono">${fmtDate(p.emissionDate)}</td><td class="mono">${fmtDate(p.dueDate)}</td><td class="num">${fmtMoney(p.amount)}</td><td class="mono" style="font-size:12px">${rep(p)}</td><td>${st(p)}</td><td><button class="link-btn" data-delgrp="${p.id}" style="color:var(--expense)">Quitar</button></td></tr>`).join('')}</tbody>
+    <div class="table-wrap"><table class="tight-m">
+      <thead><tr><th>Nº</th><th class="hide-m">Emisión</th><th>Vto.</th><th style="text-align:right">Importe</th><th class="hide-m">Facturas que paga</th><th class="hide-m">Estado</th><th></th></tr></thead>
+      <tbody>${ps.map(p => `<tr style="cursor:default"><td class="mono"><span class="hide-m">${escapeHtml(p.method || 'Pagaré')} </span>${p.effectNumber ? escapeHtml(p.effectNumber) : '—'}</td><td class="mono hide-m">${fmtDate(p.emissionDate)}</td><td class="mono">${fmtDate(p.dueDate)}</td><td class="num">${fmtMoney(p.amount)}</td><td class="mono hide-m" style="font-size:12px">${rep(p)}</td><td class="hide-m">${st(p)}</td><td><button class="link-btn" data-delgrp="${p.id}" style="color:var(--expense)">Quitar</button></td></tr>`).join('')}</tbody>
     </table></div></div>`;
 }
 /* Lo que falta por cubrir de una factura (importe − cobros y pagarés ya apuntados, incluidos los agrupados) */
@@ -1634,13 +1649,13 @@ function openGroupedPagaresModal(clientId) {
   const root = document.getElementById('modalRoot');
   const selInvs = () => cand.filter(i => sel.has(i.id));
   const sortedPags = () => pags.map((p, ix) => ({ ...p, ix })).filter(p => num(p.amount) > 0).sort((a, b) => (a.dueDate || '9999') < (b.dueDate || '9999') ? -1 : (a.dueDate || '9999') > (b.dueDate || '9999') ? 1 : a.ix - b.ix);
-  const pagRow = (p, ix) => `<tr>
-      <td><input data-pf="effectNumber" data-ix="${ix}" value="${escapeHtml(p.effectNumber)}" placeholder="6.606.926" style="width:110px"></td>
-      <td><input type="date" data-pf="emissionDate" data-ix="${ix}" value="${p.emissionDate}"></td>
-      <td><input type="date" data-pf="dueDate" data-ix="${ix}" value="${p.dueDate}"></td>
-      <td><input type="number" step="0.01" data-pf="amount" data-ix="${ix}" value="${p.amount}" style="width:110px;text-align:right"></td>
-      <td><input data-pf="issuingBank" data-ix="${ix}" value="${escapeHtml(p.issuingBank)}" placeholder="Banco emisor" style="width:120px"></td>
-      <td>${pags.length > 1 ? `<button type="button" class="link-btn" data-delp="${ix}" style="color:var(--expense)">Quitar</button>` : ''}</td></tr>`;
+  const pagRow = (p, ix) => `<div class="grp-pag">
+      <div><label>Nº pagaré</label><input data-pf="effectNumber" data-ix="${ix}" value="${escapeHtml(p.effectNumber)}" placeholder="6.606.926"></div>
+      <div><label>Fecha emisión</label><input type="date" data-pf="emissionDate" data-ix="${ix}" value="${p.emissionDate}"></div>
+      <div><label>Vencimiento</label><input type="date" data-pf="dueDate" data-ix="${ix}" value="${p.dueDate}"></div>
+      <div><label>Importe (€)</label><input type="number" step="0.01" inputmode="decimal" data-pf="amount" data-ix="${ix}" value="${p.amount}" style="text-align:right"></div>
+      <div><label>Banco emisor</label><input data-pf="issuingBank" data-ix="${ix}" value="${escapeHtml(p.issuingBank)}" placeholder="Banco emisor"></div>
+      ${pags.length > 1 ? `<button type="button" class="link-btn" data-delp="${ix}" style="color:var(--expense);flex:0 0 auto;padding-bottom:6px">Quitar</button>` : ''}</div>`;
   const summary = () => {
     const invs = selInvs(), sp = sortedPags();
     const tF = round2(invs.reduce((s, i) => s + outUncovered(i), 0)), tP = round2(sp.reduce((s, p) => s + num(p.amount), 0)), dif = round2(tP - tF);
@@ -1663,13 +1678,12 @@ function openGroupedPagaresModal(clientId) {
       <h3>Pagarés agrupados · ${escapeHtml(c.name)}</h3>
       <p class="field-hint">Para cuando el cliente manda varios pagarés que pagan varias facturas a la vez. Cada pagaré se guarda <strong>una sola vez, con su importe real</strong> (así sale en Control de efectos y en la remesa), y en cada factura queda apuntado lo que cubre.</p>
       <h4 style="margin:10px 0 4px">1. Facturas que pagan</h4>
-      ${cand.length ? `<div class="table-wrap" style="max-height:220px;overflow:auto"><table style="font-size:13px"><thead><tr><th class="checkcol"></th><th>Nº</th><th>Fecha</th><th style="text-align:right">Importe</th><th style="text-align:right">Por cubrir</th></tr></thead><tbody>
-        ${cand.map(i => `<tr style="cursor:pointer" data-selinv="${i.id}"><td><input type="checkbox" data-chkinv="${i.id}" ${sel.has(i.id) ? 'checked' : ''}></td><td class="mono">${escapeHtml(i.number || '—')}</td><td class="mono">${fmtDate(i.date)}</td><td class="num">${fmtMoney(i.amount)}</td><td class="num">${fmtMoney(outUncovered(i))}</td></tr>`).join('')}
+      ${cand.length ? `<div class="table-wrap" style="max-height:220px;overflow:auto"><table style="font-size:13px"><thead><tr><th class="checkcol"></th><th>Nº</th><th class="hide-m">Fecha</th><th class="hide-m" style="text-align:right">Importe</th><th style="text-align:right">Por cubrir</th></tr></thead><tbody>
+        ${cand.map(i => `<tr style="cursor:pointer" data-selinv="${i.id}"><td><input type="checkbox" data-chkinv="${i.id}" ${sel.has(i.id) ? 'checked' : ''}></td><td class="mono">${escapeHtml(i.number || '—')}</td><td class="mono hide-m">${fmtDate(i.date)}</td><td class="num hide-m">${fmtMoney(i.amount)}</td><td class="num">${fmtMoney(outUncovered(i))}</td></tr>`).join('')}
       </tbody></table></div>` : '<div class="empty">Este cliente no tiene facturas pendientes de cubrir.</div>'}
       <h4 style="margin:14px 0 4px">2. Pagarés recibidos</h4>
       <div class="form-row" style="max-width:260px"><label>Tipo de efecto</label><select id="grpMethod">${EFFECT_METHODS.map(m => `<option ${m === method ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
-      <div class="table-wrap"><table style="font-size:13px"><thead><tr><th>Nº pagaré</th><th>Fecha emisión</th><th>Vencimiento</th><th style="text-align:right">Importe</th><th>Banco emisor</th><th></th></tr></thead>
-        <tbody>${pags.map(pagRow).join('')}</tbody></table></div>
+      <div>${pags.map(pagRow).join('')}</div>
       <button type="button" class="btn btn-sm" id="grpAddP" style="margin-top:6px">+ Añadir pagaré</button> <span class="field-hint">copia la emisión, el importe y el banco del anterior y suma 1 al número</span>
       <h4 style="margin:14px 0 4px">3. Reparto</h4>
       <div id="grpSum"></div>
@@ -2196,7 +2210,7 @@ function renderSupplierDetail(id) {
         <button class="btn btn-danger" id="delS">Eliminar</button>
       </div>
     </div>
-    <div class="split">
+    <div class="split stacked">
       <div class="card contact-card">
         <h2>Ficha</h2>
         <div class="field"><div class="k">Código de proveedor</div><div class="v mono">${escapeHtml(s.code||'—')}</div></div>
@@ -2206,7 +2220,7 @@ function renderSupplierDetail(id) {
         <div class="field"><div class="k">Email</div><div class="v">${escapeHtml(s.email||'—')}</div></div>
         <div class="field"><div class="k">Forma de pago</div><div class="v"><span class="pill pill-neutral">${escapeHtml(s.paymentMethod||'—')}</span></div></div>
         <div class="field"><div class="k">Plazo de pago</div><div class="v">${num(s.paymentTermDays)>0?num(s.paymentTermDays)+' días':PROV_TERM+' días <span class="muted">(provisional, sin revisar)</span>'}</div></div>
-        ${s.notes?`<div class="field"><div class="k">Notas</div><div class="v">${escapeHtml(s.notes)}</div></div>`:''}
+        ${s.notes?`<div class="field wide"><div class="k">Notas</div><div class="v">${escapeHtml(s.notes)}</div></div>`:''}
       </div>
       <div>
         <div class="card">
