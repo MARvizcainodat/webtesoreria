@@ -467,6 +467,69 @@ const EXPENSE_CATEGORIES = [
   { id: 'impuesto', label: 'Impuesto' },
   { id: 'nomina', label: 'Nómina' },
 ];
+/* Grupos para ordenar los gastos fijos: van juntos, uno detrás de otro, en este orden */
+const EXPENSE_GROUPS = [
+  { id: 'personal', label: 'Personal: nóminas, seguros sociales, retenciones y autónomos' },
+  { id: 'hacienda', label: 'Hacienda e impuestos' },
+  { id: 'banco', label: 'Bancos, préstamos y leasing' },
+  { id: 'seguros', label: 'Seguros' },
+  { id: 'suministros', label: 'Suministros: luz, agua, teléfono' },
+  { id: 'servicios', label: 'Servicios: gestoría, alquileres y otros' },
+];
+/* Si el gasto no tiene grupo elegido, se deduce del concepto (se puede cambiar en su ficha) */
+function expenseGroup(e) {
+  if (e.group && EXPENSE_GROUPS.some(g => g.id === e.group)) return e.group;
+  const t = stripAcc(e.concept || '');
+  if (e.category === 'nomina' || /nomina|seguridad social|seguros sociales|\btc1?\b|retencion|irpf|mod(elo)?\.? ?111|autonomo|reta\b/.test(t)) return 'personal';
+  if (/seguro|vida|poliza|mapfre|allianz|axa|mutua|caser|zurich|generali|ocaso|liberty|helvetia/.test(t)) return 'seguros';
+  if (e.category === 'impuesto' || /\biva\b|hacienda|aeat|aplazamiento|fraccion|diputacion|ibi|\biae\b|impuesto|tasa|modelo|suma\b|ivtm|circulacion/.test(t)) return 'hacienda';
+  if (e.category === 'prestamo' || /prestamo|leasing|renting|banco|comision|tarjeta|santander|unicaja|caixa|bbva|sabadell|cajamar|credito/.test(t)) return 'banco';
+  if (/luz|agua|telefono|movil|orange|movistar|vodafone|yoigo|digi|masmovil|internet|fibra|endesa|iberdrola|naturgy|repsol|electric|gasoil|combustible|aqualia|somos/.test(t)) return 'suministros';
+  return 'servicios';
+}
+const groupRank = e => EXPENSE_GROUPS.findIndex(g => g.id === expenseGroup(e));
+/* Gasto fijo vinculado a un proveedor (luz, agua, teléfono, seguros, gestoría…): sus facturas NO salen en «Pagos a proveedores»;
+   cada mes la factura que llega es el importe definitivo del gasto fijo; mientras no llega, se usa el importe previsto. */
+/* Cómo se empareja cada factura con su gasto fijo (como un Excel con una columna «gasto fijo» al lado de cada factura):
+   1) el mes es el del CARGO: vencimiento de la factura; si no tiene, su fecha (riesgo «factura del 30/09, cargo el 14/10»)
+   2) cada gasto fijo coge como mucho UNA factura al mes: la de importe más parecido al previsto, y solo si se parece
+      (entre la mitad y el doble). Así un proveedor con varias pólizas (AXA 1, AXA 2…) reparte una factura a cada una,
+      y una factura suelta del mismo proveedor (una reparación) sigue saliendo en «Pagos a proveedores».
+   3) si el reparto automático se equivoca, en la factura se elige a mano su gasto fijo, o «No es de ningún gasto fijo». */
+let _lk = null;
+function linkIndex() {
+  const key = [state.invoicesIn, state.fixedExpenses, state.invoiceInPayments];
+  if (_lk && key.every((v, k) => v === _lk.key[k])) return _lk;
+  const byExp = {}, inv2exp = {}, bySup = {}, linesByInv = {};
+  state.fixedExpenses.filter(e => e.supplierId).forEach(e => (bySup[e.supplierId] = bySup[e.supplierId] || []).push(e));
+  allInLines().forEach(l => (linesByInv[l.invoiceId] = linesByInv[l.invoiceId] || []).push(l));
+  const chargeMonth = inv => { const d = (linesByInv[inv.id] || []).map(l => l.dueDate).filter(isoOk).sort()[0] || (isoOk(inv.dueDate) ? inv.dueDate : '') || inv.date || ''; return String(d).slice(0, 7); };
+  const put = (e, inv, m) => { inv2exp[inv.id] = e.id; ((byExp[e.id] = byExp[e.id] || {})[m] = byExp[e.id][m] || []).push(...(linesByInv[inv.id] || [])); };
+  const groups = {};
+  state.invoicesIn.forEach(inv => {
+    const exps = bySup[inv.supplierId]; if (!exps || inv.fixedExpenseId === 'none') return;
+    const m = chargeMonth(inv); if (!m) return;
+    const pin = inv.fixedExpenseId && exps.find(e => e.id === inv.fixedExpenseId);
+    if (pin) return put(pin, inv, m);
+    (groups[inv.supplierId + '|' + m] = groups[inv.supplierId + '|' + m] || { exps, m, invs: [] }).invs.push(inv);
+  });
+  Object.values(groups).forEach(g => {
+    const free = g.invs.slice();
+    /* primero los gastos con importe previsto más alto, para que no se queden con la factura pequeña */
+    g.exps.filter(e => !(byExp[e.id] && byExp[e.id][g.m])).sort((a, b) => num(b.amount) - num(a.amount)).forEach(e => {
+      const prev = num(e.amount);
+      const ok = free.filter(inv => !(prev > 0) || (num(inv.amount) >= prev / 2 && num(inv.amount) <= prev * 2));
+      if (!ok.length) return;
+      const best = ok.sort((x, y) => Math.abs(num(x.amount) - prev) - Math.abs(num(y.amount) - prev))[0];
+      free.splice(free.indexOf(best), 1); put(e, best, g.m);
+    });
+  });
+  return (_lk = { key, byExp, inv2exp });
+}
+const linkedInvoice = invoiceId => linkIndex().inv2exp[invoiceId] || '';
+const linkedLines = (e, m) => e && e.supplierId ? ((linkIndex().byExp[e.id] || {})[m] || []) : [];
+/* si la factura del mes ya está pagada, manda la factura: un pago apuntado a mano en el gasto fijo ese mes no se cuenta otra vez */
+const invoicePaidFor = (e, m) => linkedLines(e, m).some(l => l.paid);
 const FREQUENCIES = [
   { id: 'mensual', label: 'Mensual' },
   { id: 'trimestral', label: 'Trimestral' },
@@ -718,6 +781,7 @@ const planInMonth = (e, m) => hasPlan(e) ? e.installments.filter(p => /^\d{4}-\d
 /* Fecha del cargo en un mes: la del plazo si la hay; si no, el mismo día del mes que el próximo vencimiento */
 function expenseDayIn(e, m) {
   const p = planInMonth(e, m)[0]; if (p) return p.date;
+  if (e.category === 'impuesto' && e.autoIvaCalc && ivaQOfPayMonth(m)) return `${m}-${m.slice(5) === '01' ? '30' : '20'}`;
   const dim = dayjs(m + '-01').daysInMonth(), day = Math.min(dayjs(e.nextDate).isValid() ? dayjs(e.nextDate).date() : 1, dim);
   return `${m}-${String(day).padStart(2, '0')}`;
 }
@@ -731,6 +795,7 @@ function planLabel(e, m) {
 const planFinCostMonth = m => state.fixedExpenses.filter(hasPlan).reduce((s, e) => s + planInMonth(e, m).reduce((t, p) => t + num(p.interest) + num(p.surcharge), 0), 0);
 function expenseOccursInMonth(exp, mKey) {
   if (hasPlan(exp)) return planInMonth(exp, mKey).length > 0;
+  if (exp.category === 'impuesto' && exp.autoIvaCalc) return !!ivaQOfPayMonth(mKey);
   if (!exp.nextDate) return false;
   const anchor = dayjs(exp.nextDate).startOf('month');
   const target = dayjs(mKey + '-01');
@@ -748,6 +813,7 @@ function expenseOccursInMonth(exp, mKey) {
   return occurs;
 }
 function expenseMonthAmount(e, m) {
+  const inv = linkedLines(e, m); if (inv.length) return round2(inv.reduce((s, l) => s + num(l.amount), 0)); /* llegó la factura: importe definitivo */
   if (!expenseOccursInMonth(e, m)) return 0;
   if (hasPlan(e)) return round2(planInMonth(e, m).reduce((s, p) => s + instTotal(p), 0));
   if (e.category === 'impuesto' && e.autoIvaCalc) { const qid = ivaQOfPayMonth(m); if (qid && ivaQState(qid).st !== 'pendiente') return 0; }
@@ -761,17 +827,53 @@ function expenseMonthAmount(e, m) {
   }
   return base;
 }
-function expPaid(id, m) { return state.fixedExpensePayments.filter(p => p.expenseId === id && p.month === m).reduce((s, p) => s + Number(p.amount || 0), 0); }
+function expPaid(id, m) {
+  const e = byId(state.fixedExpenses, id);
+  if (invoicePaidFor(e, m)) return linkedLines(e, m).filter(l => l.paid).reduce((s, l) => s + num(l.amount), 0);
+  return state.fixedExpensePayments.filter(p => p.expenseId === id && p.month === m).reduce((s, p) => s + Number(p.amount || 0), 0);
+}
 function expArrears(e, m) {
+  if (e.category === 'impuesto' && e.autoIvaCalc) return 0; /* el IVA vencido sale en la tabla IVA trimestral, no como atraso */
   const ms = state.fixedExpensePayments.map(p => p.month).filter(Boolean).sort();
   if (!ms.length) return 0; // el seguimiento empieza con el primer pago registrado
   let k = ms[0], tot = 0;
   while (k < m) { tot += Math.max(0, expenseMonthAmount(e, k) - expPaid(e.id, k)); k = dayjs(k + '-01').add(1, 'month').format('YYYY-MM'); }
   return tot;
 }
+function payFixed(id, m, pend) {
+  const e = byId(state.fixedExpenses, id), open = linkedLines(e, m).filter(l => !l.paid);
+  if (!open.length) return openEntityModal('expensePayment', null, { expenseId: id, month: m, amount: pend, date: todayISO(), bank: e?.bank || '' });
+  const tot = open.reduce((s, l) => s + num(l.amount), 0);
+  const manual = state.fixedExpensePayments.filter(p => p.expenseId === id && p.month === m);
+  if (manual.length) { /* el recibo ya se pagó: se apunta en la factura con esa fecha y banco, y el pago a mano se quita para no contarlo dos veces */
+    const p0 = manual.slice().sort((a, b) => (a.date || '') < (b.date || '') ? 1 : -1)[0];
+    return (async () => { try {
+      for (const l of open) await applyInLineUpdate(l, { paid: true, paidDate: p0.date || todayISO(), paidBank: defBank(p0.bank || e.bank) });
+      for (const p of manual) await db.collection('fixedExpensePayments').doc(p.id).delete();
+      showToast(`El pago del ${fmtDate(p0.date)} se ha pasado a la factura ${open.map(l => l.invoiceNumber || '').join(', ')}`);
+    } catch (err) { console.error(err); showToast('No se pudo guardar. Inténtalo de nuevo.'); } })();
+  }
+  askBank({ title: `Pagar ${fmtMoney(tot)} · ${escapeHtml(e.concept)} · fra. ${escapeHtml(open.map(l => l.invoiceNumber || '').join(', '))}`, defBank: e.bank || mainBankId(), onOk: async (bank, date) => {
+    try { for (const l of open) await applyInLineUpdate(l, { paid: true, paidDate: date, paidBank: bank }); showToast('Pago anotado en la factura'); }
+    catch (err) { console.error(err); showToast('No se pudo guardar. Inténtalo de nuevo.'); }
+  } });
+}
 /* estado del gasto fijo en el mes actual (columna de la hoja Bancos): Pagado / Parcial / Pendiente + botón Pagar */
+function ivaPayBtn(qid, m) {
+  const [y, qq] = qid.split('-'), q = parseInt(qq) - 1, a = dayjs(new Date(+y, q * 3, 1)), b = a.add(2, 'month').endOf('month');
+  const net = Math.max(0, ivaQuarterNet(a, b));
+  return `<button class="btn btn-sm" data-ivpay="${qid}" data-ivl="${q + 1}T ${y}" data-iva="${net.toFixed(2)}" data-ivd="${ivaDue(+y, q).format('YYYY-MM-DD')}">Pagar o fraccionar</button>`;
+}
+const needsMove = (e, m) => linkedLines(e, m).some(l => !l.paid) && state.fixedExpensePayments.some(p => p.expenseId === e.id && p.month === m);
+const moveBtn = (e, m) => `<button class="btn btn-sm" data-payexp="${e.id}" data-m="${m}" data-pend="0" title="Este mes hay un pago apuntado a mano y la factura sigue sin marcar: se pasa el pago a la factura">Pasar pago a la factura</button>`;
 function fixedMonthCell(e) {
   const m = dayjs().format('YYYY-MM');
+  if (needsMove(e, m)) return moveBtn(e, m);
+  if (e.category === 'impuesto' && e.autoIvaCalc) {
+    const qid = ivaQOfPayMonth(m); if (!qid) return '<span class="muted">No toca</span>';
+    const st = ivaQState(qid).st;
+    return st === 'fraccionado' ? '<span class="pill pill-info">Fraccionado</span>' : st === 'pagado' ? '<span class="pill pill-income">Pagado</span>' : ivaPayBtn(qid, m);
+  }
   const prev = expenseMonthAmount(e, m) + expArrears(e, m), pag = expPaid(e.id, m), pend = Math.max(0, prev - pag);
   if (prev <= 0.005 && pag <= 0.005) return '<span class="muted">No toca</span>';
   if (pend <= 0.005) return `<span class="pill pill-income" title="Pagado ${fmtMoney(pag)}">Pagado</span>`;
@@ -780,29 +882,49 @@ function fixedMonthCell(e) {
 function fixedCards(m) {
   const rows = []; let tP = 0, tG = 0, tD = 0;
   state.fixedExpenses.forEach(e => {
+    if (e.category === 'impuesto' && e.autoIvaCalc) return; /* el IVA del trimestre sale una sola vez, en su fila «IVA 3T…» */
     const cuota = expenseMonthAmount(e, m), atr = expArrears(e, m), pag = expPaid(e.id, m);
     if (!cuota && !atr && !pag) return;
     const prev = cuota + atr, pend = Math.max(0, prev - pag);
     const date = expenseDayIn(e, m);
     tP += prev; tG += pag; tD += pend;
     const st = pend <= 0.005 ? ['Pagado', 'pill-income'] : pag > 0 ? ['Parcial', 'pill-warn'] : ['Pendiente', 'pill-expense'];
-    rows.push({ date, html: `<tr><td class="mono">${fmtDate(date)}</td><td>${escapeHtml(e.concept)}<span class="muted">${escapeHtml(planLabel(e, m))}</span></td><td class="num">${atr > 0.005 ? fmtMoney(atr) : '—'}</td><td class="num">${fmtMoney(prev)}</td><td class="num">${fmtMoney(pag)}</td><td class="num">${fmtMoney(pend)}</td><td><span class="pill ${st[1]}">${st[0]}</span></td><td>${pend > 0.005 ? `<button class="btn btn-sm" data-payexp="${e.id}" data-m="${m}" data-pend="${pend.toFixed(2)}">Pagar</button>` : ''}</td></tr>` });
+    const inv = linkedLines(e, m), estTag = e.supplierId ? (inv.length ? ` <span class="pill pill-income" title="Importe de la factura ${escapeHtml(inv.map(l => l.invoiceNumber || '').join(', '))}">definitivo</span>` : ' <span class="pill pill-neutral" title="Aún no ha llegado la factura de este mes">previsto</span>') : '';
+    rows.push({ grp: groupRank(e), date, html: `<tr><td class="mono">${fmtDate(date)}</td><td>${escapeHtml(e.concept)}${estTag}<span class="muted">${escapeHtml(planLabel(e, m))}</span></td><td class="num">${atr > 0.005 ? fmtMoney(atr) : '—'}</td><td class="num">${fmtMoney(prev)}</td><td class="num">${fmtMoney(pag)}</td><td class="num">${fmtMoney(pend)}</td><td><span class="pill ${st[1]}">${st[0]}</span></td><td>${needsMove(e, m) ? moveBtn(e, m) : pend > 0.005 ? (e.category === 'impuesto' && e.autoIvaCalc && ivaQOfPayMonth(m) ? ivaPayBtn(ivaQOfPayMonth(m), m) : `<button class="btn btn-sm" data-payexp="${e.id}" data-m="${m}" data-pend="${pend.toFixed(2)}">Pagar</button>`) : ''}</td></tr>` });
   });
-  rows.sort((a, b) => a.date < b.date ? -1 : 1);
+  /* IVA trimestral pendiente y gastos puntuales sin pagar de ese mes (en el mes actual, también los vencidos de antes) */
+  const curM = dayjs().format('YYYY-MM'), inMonthOrOverdue = d => d && (d.slice(0, 7) === m || (m === curM && d.slice(0, 7) < m));
+  ivaQuarterItems(dayjs().startOf('day'), dayjs(m + '-01').endOf('month')).filter(i => inMonthOrOverdue(i.date)).forEach(i => {
+    tP += i.amount; tD += i.amount;
+    const btn = i.pay ? `<button class="btn btn-sm" data-ivpay="${i.pay.qid}" data-ivl="${i.pay.qlabel}" data-iva="${i.amount.toFixed(2)}" data-ivd="${i.pay.due}">Pagar o fraccionar</button>` : '';
+    rows.push({ grp: EXPENSE_GROUPS.findIndex(g => g.id === 'hacienda'), date: i.date, html: `<tr><td class="mono">${fmtDate(i.date)}</td><td>${escapeHtml(i.label)}</td><td class="num">—</td><td class="num">${fmtMoney(i.amount)}</td><td class="num">${fmtMoney(0)}</td><td class="num">${fmtMoney(i.amount)}</td><td><span class="pill ${i.date < todayISO() ? 'pill-expense' : 'pill-warn'}">${i.date < todayISO() ? 'Vencido' : 'Pendiente'}</span></td><td>${btn}</td></tr>` });
+  });
+  state.oneOffExpenses.filter(x => !x.paid && inMonthOrOverdue(x.dueDate)).forEach(x => {
+    const a = num(x.amount); tP += a; tD += a;
+    rows.push({ grp: 99, date: x.dueDate, html: `<tr><td class="mono">${fmtDate(x.dueDate)}</td><td>${escapeHtml(x.concept)} <span class="muted">· gasto puntual</span></td><td class="num">—</td><td class="num">${fmtMoney(a)}</td><td class="num">${fmtMoney(0)}</td><td class="num">${fmtMoney(a)}</td><td><span class="pill ${x.dueDate < todayISO() ? 'pill-expense' : 'pill-warn'}">${x.dueDate < todayISO() ? 'Vencido' : 'Pendiente'}</span></td><td><button class="btn btn-sm" data-oopay="${x.id}">Pagar</button></td></tr>` });
+  });
+  rows.sort((a, b) => a.grp - b.grp || (a.date < b.date ? -1 : 1));
+  /* una línea de título al empezar cada grupo */
+  const withHeads = []; let lastG = null;
+  rows.forEach(r => { if (r.grp !== lastG) { lastG = r.grp; withHeads.push({ html: `<tr><td colspan="8" style="background:var(--surface-2);font-weight:600;font-size:12px;padding:5px 8px">${r.grp === 99 ? 'Gastos puntuales' : EXPENSE_GROUPS[r.grp]?.label || ''}</td></tr>` }); } withHeads.push(r); });
+  rows.length = 0; withHeads.forEach(r => rows.push(r));
   const inM = d => d && String(d).slice(0, 7) === m, ev = [];
-  state.fixedExpensePayments.forEach(p => { const dt = p.date || (p.month ? p.month + '-01' : ''); if (inM(dt)) { const e = byId(state.fixedExpenses, p.expenseId); ev.push({ date: dt, concept: e?.concept || '—', tipo: 'Pago de gasto fijo', bank: defBank(p.bank || e?.bank), amount: Number(p.amount || 0), kind: 'out', pid: p.id }); } });
-  allInLines().filter(l => l.paid && inM(l.paidDate)).forEach(l => ev.push({ date: l.paidDate, concept: `${byId(state.suppliers, l.supplierId)?.name || '—'} · ${l.invoiceNumber || ''}`, tipo: 'Pago a proveedor', bank: lineBank(l, 'paidBank'), amount: Number(l.amount || 0), kind: 'out' }));
-  state.oneOffExpenses.filter(x => x.paid && inM(x.paidDate)).forEach(x => ev.push({ date: x.paidDate, concept: x.concept, tipo: 'Gasto puntual', bank: defBank(x.paidBank || x.bank), amount: Number(x.amount || 0), kind: 'out' }));
+  state.fixedExpensePayments.forEach(p => { const dt = p.date || (p.month ? p.month + '-01' : ''); if (inM(dt) && !invoicePaidFor(byId(state.fixedExpenses, p.expenseId), p.month)) { const e = byId(state.fixedExpenses, p.expenseId); ev.push({ date: dt, concept: e?.concept || '—', tipo: 'Pago de gasto fijo', bank: defBank(p.bank || e?.bank), amount: Number(p.amount || 0), kind: 'out', pid: p.id }); } });
+  allInLines().filter(l => l.paid && inM(l.paidDate)).forEach(l => ev.push({ date: l.paidDate, concept: `${byId(state.suppliers, l.supplierId)?.name || '—'} · ${l.invoiceNumber || ''}`, tipo: linkedInvoice(l.invoiceId) ? 'Pago de gasto fijo (factura)' : 'Pago a proveedor', bank: lineBank(l, 'paidBank'), amount: Number(l.amount || 0), kind: 'out' }));
+  state.oneOffExpenses.filter(x => x.paid && inM(x.paidDate)).forEach(x => ev.push({ date: x.paidDate, concept: x.concept, tipo: x.ivaQuarter ? 'IVA trimestral' : 'Gasto puntual', bank: defBank(x.paidBank || x.bank), amount: Number(x.amount || 0), kind: 'out' }));
   allOutLines().filter(l => l.collected && inM(l.collectedDate)).forEach(l => ev.push({ date: l.collectedDate, concept: `${byId(state.clients, l.clientId)?.name || '—'} · ${l.invoiceNumber || ''}`, tipo: l.negotiated ? 'Cobro anticipado (negociado)' : 'Cobro de cliente', bank: lineBank(l, 'collectedBank'), amount: Number(l.amount || 0), kind: 'in' }));
-  ev.sort((a, b) => a.date < b.date ? 1 : -1);
+  ev.sort((a, b) => a.date < b.date ? -1 : 1); /* como un extracto: del más antiguo al más reciente */
   const G = 'color:#14663c;font-weight:600', RED = 'color:var(--expense)';
-  return `<div class="card"><h2>Gastos fijos · ${monthLabel(m)}</h2>
+  const eIn = ev.filter(x => x.kind === 'in').reduce((s, x) => s + x.amount, 0), eOut = ev.filter(x => x.kind === 'out').reduce((s, x) => s + x.amount, 0);
+  return `<div class="card"><h2>Gastos fijos, impuestos y gastos puntuales · ${monthLabel(m)}</h2>
     <div class="muted" style="margin-bottom:8px">Previsto (cuota del mes + atrasos) ${fmtMoney(tP)} · Pagado ${fmtMoney(tG)} · Pendiente ${fmtMoney(tD)}</div>
     <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Concepto</th><th>Atraso</th><th>Previsto</th><th>Pagado</th><th>Pendiente</th><th>Estado</th><th></th></tr></thead>
-    <tbody>${rows.map(r => r.html).join('') || '<tr><td colspan="8" class="empty">Sin gastos fijos este mes.</td></tr>'}</tbody></table></div></div>
-  <div class="card"><h2>Pagos y cobros registrados · ${monthLabel(m)}</h2>
+    <tbody>${rows.map(r => r.html).join('') || '<tr><td colspan="8" class="empty">Sin gastos fijos este mes.</td></tr>'}
+      ${rows.length ? `<tr style="border-top:2px solid var(--border-strong)"><td colspan="3"><strong>Total</strong></td><td class="num"><strong>${fmtMoney(tP)}</strong></td><td class="num"><strong>${fmtMoney(tG)}</strong></td><td class="num"><strong style="${tD > 0.005 ? RED : ''}">${fmtMoney(tD)}</strong></td><td colspan="2"></td></tr>` : ''}</tbody></table></div></div>
+  <div class="card"><h2>Movimientos registrados · ${monthLabel(m)}</h2><div class="muted" style="margin-bottom:8px">Lo ya cobrado y pagado ese mes, por fecha, como un extracto del banco</div>
     <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Concepto</th><th>Tipo</th><th>Banco</th><th>Importe</th></tr></thead>
-    <tbody>${ev.map(x => `<tr ${x.pid ? `data-pid="${x.pid}" style="cursor:pointer"` : ''}><td class="mono">${fmtDate(x.date)}</td><td>${escapeHtml(x.concept)}</td><td class="muted">${x.tipo}</td><td class="muted">${escapeHtml(bankNameOf(x.bank) || '—')}</td><td class="num" style="${x.kind === 'in' ? G : RED}">${x.kind === 'in' ? '+' : '−'}${fmtMoney(x.amount)}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No hay pagos ni cobros registrados este mes.</td></tr>'}</tbody></table></div></div>`;
+    <tbody>${ev.map(x => `<tr ${x.pid ? `data-pid="${x.pid}" style="cursor:pointer"` : ''}><td class="mono">${fmtDate(x.date)}</td><td>${escapeHtml(x.concept)}</td><td class="muted">${x.tipo}</td><td class="muted">${escapeHtml(bankNameOf(x.bank) || '—')}</td><td class="num" style="${x.kind === 'in' ? G : RED}">${x.kind === 'in' ? '+' : '−'}${fmtMoney(x.amount)}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No hay pagos ni cobros registrados este mes.</td></tr>'}
+      ${ev.length ? `<tr style="border-top:2px solid var(--border-strong)"><td colspan="4">Total cobrado</td><td class="num" style="${G}">+${fmtMoney(eIn)}</td></tr><tr><td colspan="4">Total pagado</td><td class="num" style="${RED}">−${fmtMoney(eOut)}</td></tr><tr><td colspan="4"><strong>Diferencia del mes</strong></td><td class="num"><strong style="${eIn - eOut >= 0 ? G : RED}">${eIn - eOut >= 0 ? '+' : '−'}${fmtMoney(Math.abs(eIn - eOut))}</strong></td></tr>` : ''}</tbody></table></div></div>`;
 }
 /* ===== Sobres y cartas ===== */
 /* Medidas del sobre en mm (sobre americano nº 10). left = distancia desde el borde izquierdo (más = más a la derecha); top = desde arriba (más = más abajo). */
@@ -900,8 +1022,9 @@ function pagareLetterHtml(line) {
   </body></html>`;
 }
 function computeAutoIva(mKey) {
-  const end = dayjs(mKey + '-01').endOf('month');
-  const start = dayjs(mKey + '-01').subtract(2, 'month').startOf('month');
+  /* en octubre se paga julio-septiembre: el trimestre que termina el mes anterior al pago */
+  const end = dayjs(mKey + '-01').subtract(1, 'month').endOf('month');
+  const start = dayjs(mKey + '-01').subtract(3, 'month').startOf('month');
   const inRange = (d) => { const dd = dayjs(d); return dd.isValid() && !dd.isBefore(start) && !dd.isAfter(end); };
   const facturado = state.invoicesOut.filter(i=>inRange(i.date) && !i.ivaExempt).reduce((s,i)=>s+Number(i.amount||0),0);
   const recibido = state.invoicesIn.filter(i=>inRange(i.date) && !i.ivaExempt).reduce((s,i)=>s+Number(i.amount||0),0);
@@ -1773,7 +1896,7 @@ function bankMoves(bankId, after) {
   let cob = 0, pag = 0, tras = 0;
   allOutLines().forEach(l => { if (l.collected && l.collectedDate > after && lineBank(l, 'collectedBank') === bankId) cob += Number(l.amount || 0); });
   allInLines().forEach(l => { if (l.paid && l.paidDate > after && lineBank(l, 'paidBank') === bankId) pag += Number(l.amount || 0); });
-  state.fixedExpensePayments.forEach(p => { const e = byId(state.fixedExpenses, p.expenseId); if (p.date > after && defBank(p.bank || e?.bank) === bankId) pag += Number(p.amount || 0); });
+  state.fixedExpensePayments.forEach(p => { const e = byId(state.fixedExpenses, p.expenseId); if (invoicePaidFor(e, p.month)) return; /* ya baja por la factura */ if (p.date > after && defBank(p.bank || e?.bank) === bankId) pag += Number(p.amount || 0); });
   state.oneOffExpenses.forEach(x => { if (x.paid && x.paidDate > after && defBank(x.paidBank || x.bank) === bankId) pag += Number(x.amount || 0); });
   state.bankTransfers.forEach(t => { if (t.fromId && t.toId && t.date > after && t.fromId !== t.toId) { const v = Number(t.amount || 0); if (t.toId === bankId) tras += v; if (t.fromId === bankId) tras -= v; } });
   return { cob, pag, tras };
@@ -1876,13 +1999,13 @@ function renderBanks() {
         <thead><tr><th>Concepto</th><th>${monthLabel(dayjs().format('YYYY-MM'))}</th><th>Categoría</th><th>Importe</th><th>Periodicidad</th><th>Próximo vencimiento</th><th>Banco</th><th>Préstamo</th></tr></thead>
         <tbody>
           ${state.fixedExpenses.length === 0 ? '<tr><td colspan="8" class="empty">Sin conceptos configurados.</td></tr>' : ''}
-          ${state.fixedExpenses.map(e => `
-            <tr data-fid="${e.id}" style="cursor:pointer"><td>${escapeHtml(e.concept)}</td>
+          ${state.fixedExpenses.slice().sort((a, b) => groupRank(a) - groupRank(b) || String(a.concept).localeCompare(String(b.concept))).map((e, k, arr) => `${k === 0 || groupRank(arr[k - 1]) !== groupRank(e) ? `<tr><td colspan="8" style="background:var(--surface-2);font-weight:600;font-size:12px;padding:5px 8px">${EXPENSE_GROUPS[groupRank(e)].label}</td></tr>` : ''}
+            <tr data-fid="${e.id}" style="cursor:pointer"><td>${escapeHtml(e.concept)}${e.supplierId ? ` <span class="muted">· facturas de ${escapeHtml(byId(state.suppliers, e.supplierId)?.name || '—')}</span>` : ''}</td>
               <td style="white-space:nowrap">${fixedMonthCell(e)}</td>
               <td><span class="pill pill-neutral">${EXPENSE_CATEGORIES.find(c => c.id === e.category)?.label || e.category}</span></td>
               <td class="num">${e.autoIvaCalc ? 'Automático' : hasPlan(e) ? fmtMoney(e.installments.reduce((s, p) => s + instTotal(p), 0)) + ' <span class="muted">en plazos</span>' : fmtMoney(e.amount)}</td>
               <td class="muted">${FREQUENCIES.find(f => f.id === e.frequency)?.label || e.frequency}</td>
-              <td class="mono">${fmtDate(e.nextDate)}</td>
+              <td class="mono">${e.category === 'impuesto' && e.autoIvaCalc ? (x => `${fmtDate(x.due.format('YYYY-MM-DD'))} <span class="muted">(${x.label}${x.closed && x.due.isBefore(dayjs(), 'day') ? ', vencido' : ''})</span>`)(nextIvaDue()) : fmtDate(e.nextDate)}</td>
               <td class="muted">${escapeHtml(bname(defBank(e.bank)))}</td>
               <td class="muted">${escapeHtml(loanInfo(e))}</td></tr>`).join('')}
         </tbody></table></div></div>`;
@@ -1892,7 +2015,7 @@ function renderBanks() {
   document.getElementById('addOneOff').onclick = () => openEntityModal('oneOffExpense');
   document.getElementById('addExpense').onclick = () => openEntityModal('fixedExpense');
   document.getElementById('ivaSplit3').onclick = openIvaSplit;
-  document.querySelectorAll('[data-ivpay]').forEach(b => b.onclick = () => openIvaChoice(b.dataset.ivpay, b.dataset.ivl, Number(b.dataset.iva), b.dataset.ivd));
+  document.querySelectorAll('[data-ivpay]').forEach(b => b.onclick = ev => { ev.stopPropagation(); openIvaChoice(b.dataset.ivpay, b.dataset.ivl, Number(b.dataset.iva), b.dataset.ivd); });
   document.querySelectorAll('[data-ivedit]').forEach(b => b.onclick = () => openIvaSplit(b.dataset.ivedit));
   document.querySelectorAll('[data-main]').forEach(c => c.onchange = async () => {
     for (const b of state.bankAccounts) { const want = c.checked && b.id === c.dataset.main; if (!!b.main !== want) await db.collection('bankAccounts').doc(b.id).update({ main: want }); }
@@ -1906,7 +2029,7 @@ function renderBanks() {
   document.querySelectorAll('[data-tr]').forEach(tr => tr.onclick = () => openEntityModal('bankTransfer', tr.dataset.tr));
   document.querySelectorAll('[data-oo]').forEach(tr => tr.onclick = () => openEntityModal('oneOffExpense', tr.dataset.oo));
   document.querySelectorAll('[data-fid]').forEach(tr => tr.onclick = () => openEntityModal('fixedExpense', tr.dataset.fid));
-  document.querySelectorAll('#main [data-payexp]').forEach(b => b.onclick = ev => { ev.stopPropagation(); openEntityModal('expensePayment', null, { expenseId: b.dataset.payexp, month: b.dataset.m, amount: Number(b.dataset.pend), date: todayISO(), bank: byId(state.fixedExpenses, b.dataset.payexp)?.bank || '' }); });
+  document.querySelectorAll('#main [data-payexp]').forEach(b => b.onclick = ev => { ev.stopPropagation(); payFixed(b.dataset.payexp, b.dataset.m, Number(b.dataset.pend)); });
 }
 
 /* ===================== BALANCE FINANCIERO ===================== */
@@ -1930,7 +2053,7 @@ function balModel() {
   const today = todayISO(), [from, to, label] = balRangeOf(), inR = d => isoOk(d) && d >= from && d <= to;
   const out = state.invoicesOut.filter(i => inR(i.date)), inn = state.invoicesIn.filter(i => inR(i.date));
   const sumB = arr => arr.reduce((s, i) => s + baseOf(i), 0), sumA = a => a.reduce((s, l) => s + num(l.amount), 0);
-  const gastosMes = m => state.fixedExpenses.filter(e => ['gasto', 'nomina'].includes(e.category || 'gasto') && !e.autoIvaCalc).reduce((s, e) => s + expenseMonthAmount(e, m), 0) + planFinCostMonth(m) + state.oneOffExpenses.filter(x => !x.ivaQuarter && x.dueDate && x.dueDate.slice(0, 7) === m).reduce((s, x) => s + num(x.amount), 0);
+  const gastosMes = m => state.fixedExpenses.filter(e => ['gasto', 'nomina'].includes(e.category || 'gasto') && !e.autoIvaCalc).reduce((s, e) => s + (linkedLines(e, m).length ? 0 : expenseMonthAmount(e, m)), 0) + planFinCostMonth(m) + state.oneOffExpenses.filter(x => !x.ivaQuarter && x.dueDate && x.dueDate.slice(0, 7) === m).reduce((s, x) => s + num(x.amount), 0);
   const rows = monthsBetween(from, to).map(m => { const v = sumB(out.filter(i => i.date.slice(0, 7) === m)), c = sumB(inn.filter(i => i.date.slice(0, 7) === m)), g = gastosMes(m); return { m, ventas: v, compras: c, gastos: g, resultado: v - c - g }; });
   const ventas = sumB(out), compras = sumB(inn), gastos = rows.reduce((s, r) => s + r.gastos, 0), bruto = ventas - compras, resultado = bruto - gastos;
   const outL = allOutLines(), inL = allInLines(), pendOut = outL.filter(l => !l.collected), pendIn = inL.filter(l => !l.paid);
@@ -2498,6 +2621,18 @@ function ivaQState(id) {
   const p = ivaQPaidWhole(id); if (p) return { st: 'pagado', pay: p };
   return { st: 'pendiente' };
 }
+/* Calendario real del modelo 303: 1T → 20 de abril, 2T → 20 de julio, 3T → 20 de octubre, 4T → 30 de enero del año siguiente */
+const ivaDue = (y, q) => q === 3 ? dayjs(new Date(y + 1, 0, 30)) : dayjs(new Date(y, q * 3 + 3, 20));
+/* Próximo IVA por pagar: el primer trimestre ya terminado que siga pendiente (aunque esté vencido hace poco);
+   si ya están todos pagados o fraccionados, el del trimestre en curso */
+function nextIvaDue() {
+  const t = dayjs().startOf('day');
+  for (let k = -2; k <= 1; k++) {
+    const a = t.startOf('month').subtract(t.month() % 3, 'month').add(k * 3, 'month'), y = a.year(), q = Math.floor(a.month() / 3), due = ivaDue(y, q), id = ivaQId(y, q);
+    if (k < 0 && due.isBefore(t.subtract(100, 'day'), 'day')) continue;
+    if (k >= 0 || ivaQState(id).st === 'pendiente') return { id, label: `${q + 1}T ${y}`, due, st: ivaQState(id).st, closed: k < 0 };
+  }
+}
 /* trimestre cuyo IVA se paga en el mes m (enero → 4T del año anterior, abril → 1T, julio → 2T, octubre → 3T) */
 function ivaQOfPayMonth(m) { const d = dayjs(m + '-01').subtract(1, 'month'); return d.month() % 3 === 2 ? ivaQId(d.year(), Math.floor(d.month() / 3)) : ''; }
 /* Al pagar el IVA desde la previsión o desde Bancos: elegir «Pagar entero» o «Fraccionar» */
@@ -2532,7 +2667,7 @@ function ivaStatusCardHtml() {
   const t = dayjs(), rows = [];
   for (let k = 4; k >= 0; k--) {
     const a = t.startOf('month').subtract(t.month() % 3, 'month').subtract(k * 3, 'month'), y = a.year(), q = Math.floor(a.month() / 3), b = a.add(2, 'month').endOf('month');
-    const id = ivaQId(y, q), label = `${q + 1}T ${y}`, due = q === 3 ? dayjs(new Date(y + 1, 0, 30)) : b.add(1, 'day').date(20), S = ivaQState(id), net = Math.max(0, ivaQuarterNet(a, b)), open = b.isAfter(t, 'day');
+    const id = ivaQId(y, q), label = `${q + 1}T ${y}`, due = ivaDue(y, q), S = ivaQState(id), net = Math.max(0, ivaQuarterNet(a, b)), open = b.isAfter(t, 'day');
     let st, imp = net, act = '';
     if (S.st === 'fraccionado') {
       const e = S.exp, n = hasPlan(e) ? e.installments.length : 0, rest = hasPlan(e) ? e.installments.filter(p => p.date >= todayISO()).length : 0;
@@ -2689,7 +2824,7 @@ function provisionItems(months, endOverride) {
   /* Otros cobros por vencimiento: lo que falta por cobrar sin efecto recibido (transferencias, restos de pagarés parciales…), en su vencimiento previsto */
   porCobrarLines().forEach(l => { const m = l._resto ? 'Resto sin efecto' : (l.method || 'Transferencia'); items.push({ date: l.due || todayISO(), kind: 'in', cat: 'derecho', name: cliName(l.clientId), invNum: l.invoiceNumber || '', method: m, prov: !!l.dueProv, label: `${cliName(l.clientId)} · ${l.invoiceNumber || ''} (${m})`, amount: Number(l.amount || 0), bank: '', pay: l._resto ? { t: 'resto', invoiceId: l.invoiceId } : { t: 'out', id: l.id || null, invoiceId: l.invoiceId } }); });
   /* Proveedores: cada pago en su vencimiento (o en el plazo pactado con el proveedor), no todo hoy. Con efecto emitido = «Pago de efectos» */
-  allInLines().filter(l => !l.paid).forEach(l => { const e = expectedDate(l, false), ef = effectIssued(l), m = ef || !l._implicit ? l.method : (byId(state.invoicesIn, l.invoiceId)?.paymentMethod || byId(state.suppliers, l.supplierId)?.paymentMethod || 'Transferencia');
+  allInLines().filter(l => !l.paid && !linkedInvoice(l.invoiceId)).forEach(l => { const e = expectedDate(l, false), ef = effectIssued(l), m = ef || !l._implicit ? l.method : (byId(state.invoicesIn, l.invoiceId)?.paymentMethod || byId(state.suppliers, l.supplierId)?.paymentMethod || 'Transferencia');
     items.push({ date: e.date || todayISO(), kind: 'out', cat: ef ? 'efecto' : 'proveedor', method: m, issuingBank: l.issuingBank || '', name: proName(l.supplierId), invNum: l.invoiceNumber || '', prov: !!e.prov, label: `${proName(l.supplierId)} · ${l.invoiceNumber || ''} (${m})`, amount: Number(l.amount || 0), bank: l.method === 'Efectivo' ? CASH : (ef ? '' : mainBankId()), pay: { t: 'in', id: l.id || null, invoiceId: l.invoiceId } }); });
   state.oneOffExpenses.filter(x => !x.paid).forEach(x => items.push({ date: x.dueDate || todayISO(), kind: 'out', cat: 'puntual', name: x.concept, method: '', label: x.concept, amount: Number(x.amount || 0), bank: defBank(x.bank), pay: { t: 'oo', id: x.id } }));
   const ms0 = state.fixedExpensePayments.map(p => p.month).filter(Boolean).sort()[0];
@@ -2775,6 +2910,19 @@ function renderProvision() {
   const horizons = [['d7', '7 días'], [1, '1 mes'], [2, '2 meses'], [3, '3 meses'], [6, '6 meses'], [12, '12 meses']];
   const needRows = perBank.filter(p => p.oblig > 0).map(p => ({ ...p, need: Math.max(0, p.oblig - (p.saldo || 0)) }));
   const needTotal = needRows.reduce((s, p) => s + p.need, 0);
+  /* Tarjetas de movimientos previstos: cobros a clientes y pagos a proveedores, cada una con su total.
+     Los gastos fijos, préstamos, nóminas, impuestos, IVA y gastos puntuales van solo en su tarjeta de abajo, para no salir dos veces. */
+  const movCard = (title, kind, who, totLabel, hint) => {
+    const list = items.map((i, n) => ({ i, n })).filter(({ i }) => kind === 'in' ? i.kind === 'in' : (i.cat === 'proveedor' || i.cat === 'efecto'));
+    const tot = list.reduce((s, x) => s + x.i.amount, 0), venc = list.filter(x => x.i.overdue).reduce((s, x) => s + x.i.amount, 0);
+    const col = i => kind === 'in' ? (i.cat === 'cobro' ? G : 'color:#4a7a5c') : RED;
+    return `<div class="card"><h2>${title}</h2><div class="table-wrap"><table>
+      <thead><tr><th>Fecha</th><th>${who}</th><th>Factura</th><th>Forma de pago</th><th style="text-align:right">Importe</th><th></th></tr></thead><tbody>
+        ${list.length === 0 ? '<tr><td colspan="6" class="empty">No hay nada previsto en este plazo.</td></tr>' : ''}
+        ${list.map(({ i, n }) => `<tr style="cursor:default"><td class="mono">${fmtDate(i.date)}${i.overdue ? ' <span class="pill pill-expense">Vencido</span>' : ''}${i.prov ? ' <span class="muted" title="Sin vencimiento: fecha de factura + plazo">(prov.)</span>' : ''}</td><td>${escapeHtml(i.name || i.label)}</td><td class="mono">${escapeHtml(i.invNum || '—')}</td><td class="muted">${escapeHtml(i.method || '—')}${kind === 'in' ? (i.cat === 'cobro' ? ' <span class="pill pill-income">asegurado</span>' : '') : ''}</td><td class="num" style="${col(i)}">${kind === 'in' ? '+' : '−'}${fmtMoney(i.amount)}</td><td style="white-space:nowrap">${i.pay ? `<button class="btn btn-sm ${kind === 'in' ? '' : 'btn-primary'}" data-provpay="${n}"${kind === 'in' ? ' style="border-color:#14663c;color:#14663c;font-weight:600"' : ''}>${kind === 'in' ? 'Cobrar' : 'Pagar'}</button>` : ''}</td></tr>`).join('')}
+        ${list.length ? `<tr style="border-top:2px solid var(--border-strong)"><td colspan="4"><strong>${totLabel}</strong>${venc > 0.005 ? ` <span class="muted">· de ello vencido ${fmtMoney(venc)}</span>` : ''}</td><td class="num"><strong style="${kind === 'in' ? G : RED}">${kind === 'in' ? '+' : '−'}${fmtMoney(tot)}</strong></td><td></td></tr>` : ''}
+      </tbody></table></div><div class="muted" style="margin-top:6px;font-size:12px">${hint}</div></div>`;
+  };
   document.getElementById('main').innerHTML = `
     <div class="topbar"><div><h1>Previsión de tesorería</h1><div class="subtitle">Lo que tienes, lo que te entrará con seguridad razonable y lo que debes en ese plazo</div></div>
       <div><button class="btn" id="ivaSplit2">Fraccionar IVA</button> <button class="btn" id="addOneOff2">+ Gasto puntual</button> <button class="btn" id="addExpense">+ Gasto fijo / préstamo / impuesto / nómina</button></div></div>
@@ -2821,11 +2969,8 @@ function renderProvision() {
         ${perBank.map(p => `<tr><td>${escapeHtml(p.b.name)}</td><td class="num" style="${p.saldo === null ? '' : signStyle(p.saldo)}">${p.saldo === null ? '<span class="muted">Sin saldo anotado</span>' : fmtMoney(p.saldo)}</td><td class="num" style="${RED}">${p.oblig ? '−' + fmtMoney(p.oblig) : '—'}</td><td class="num" style="${p.saldo === null ? '' : signStyle(p.saldo - p.oblig)}">${p.saldo === null ? '—' : fmtMoney(p.saldo - p.oblig)}${p.saldo !== null && p.saldo - p.oblig < 0 ? ' ⚠' : ''}</td></tr>`).join('')}
         ${sinBanco > 0 ? `<tr><td>Sin banco indicado <span class="muted">(da de alta una cuenta en Bancos)</span></td><td></td><td class="num" style="${RED}">−${fmtMoney(sinBanco)}</td><td></td></tr>` : ''}
       </tbody></table></div><div class="muted" style="margin-top:6px">⚠ = la cuenta no llega para lo que tiene asignado: habría que hacer un traspaso o esperar cobros.</div></div>
-    <div class="card"><h2>Detalle de movimientos previstos</h2><div class="table-wrap"><table>
-      <thead><tr><th>Fecha</th><th>Concepto</th><th>Forma de pago</th><th>Factura</th><th style="text-align:right">Importe</th><th></th></tr></thead><tbody>
-        ${items.length === 0 ? '<tr><td colspan="6" class="empty">No hay movimientos previstos en este plazo.</td></tr>' : ''}
-        ${items.map((i, n) => `<tr style="cursor:default"><td class="mono">${fmtDate(i.date)}${i.overdue ? ' <span class="pill pill-expense">Vencido</span>' : ''}${i.prov ? ' <span class="muted" title="Sin vencimiento: fecha de factura + plazo">(prov.)</span>' : ''}</td><td>${escapeHtml(i.name || i.label)}</td><td class="muted">${escapeHtml(i.method || '—')}</td><td class="mono">${escapeHtml(i.invNum || '—')}</td><td class="num" style="${i.kind === 'in' ? (i.cat === 'cobro' ? G : 'color:#4a7a5c') : RED}">${i.kind === 'in' ? '+' : '−'}${fmtMoney(i.amount)}</td><td style="white-space:nowrap">${i.pay ? `<button class="btn btn-sm ${i.kind === 'in' ? '' : 'btn-primary'}" data-provpay="${n}"${i.kind === 'in' ? ' style="border-color:#14663c;color:#14663c;font-weight:600"' : ''}>${i.kind === 'in' ? 'Cobrar' : 'Pagar'}</button>` : ''}</td></tr>`).join('')}
-      </tbody></table></div><div class="muted" style="margin-top:6px;font-size:12px">«Pagar» anota el pago completo en su sitio: en la factura del proveedor (o en su pagaré), en el gasto fijo del mes o en el gasto puntual. «Cobrar» anota el cobro en la factura del cliente (o en su pagaré o confirming). Para pagar o cobrar solo una parte de una factura, ábrela y añade la línea.</div></div>
+    ${movCard('Cobros a clientes', 'in', 'Cliente', 'Total por cobrar', 'Pagarés, confirming y cheques recibidos, y facturas por cobrar con su vencimiento. «Cobrar» lo anota en la factura del cliente (o en su pagaré o confirming).')}
+    ${movCard('Pagos a proveedores', 'out', 'Proveedor', 'Total por pagar', 'Facturas de proveedores pendientes y sus pagarés o confirmings emitidos. «Pagar» lo anota en la factura del proveedor (o en su pagaré). Para pagar solo una parte, abre la factura y añade la línea.')}
     <div class="card"><div class="month-nav"><span class="muted">Gastos fijos y movimientos de:</span>
       <select id="monthSelect">${monthChoices.map(mm => `<option value="${mm}" ${mm === provisionMonth ? 'selected' : ''}>${monthLabel(mm)}</option>`).join('')}</select></div></div>
     ${fixedCards(provisionMonth)}
@@ -2836,16 +2981,18 @@ function renderProvision() {
   document.getElementById('goBanks').onclick = (e) => { e.preventDefault(); currentSection = 'banks'; currentDetail = {}; render(); };
   document.querySelectorAll('[data-h]').forEach(b => b.onclick = () => { provisionHorizon = b.dataset.h === 'd7' ? 'd7' : Number(b.dataset.h); render(); });
   document.getElementById('monthSelect').onchange = (e) => { provisionMonth = e.target.value; render(); };
-  document.querySelectorAll('[data-payexp]').forEach(b => b.onclick = () => openEntityModal('expensePayment', null, { expenseId: b.dataset.payexp, month: b.dataset.m, amount: Number(b.dataset.pend), date: todayISO(), bank: byId(state.fixedExpenses, b.dataset.payexp)?.bank || '' }));
+  document.querySelectorAll('[data-payexp]').forEach(b => b.onclick = () => payFixed(b.dataset.payexp, b.dataset.m, Number(b.dataset.pend)));
   document.querySelectorAll('[data-pid]').forEach(tr => tr.onclick = () => openEntityModal('expensePayment', tr.dataset.pid));
   document.querySelectorAll('[data-provpay]').forEach(b => b.onclick = () => payProvisionItem(items[+b.dataset.provpay]));
+  document.querySelectorAll('[data-oopay]').forEach(b => b.onclick = () => { const x = byId(state.oneOffExpenses, b.dataset.oopay); if (x) payProvisionItem({ pay: { t: 'oo', id: x.id }, kind: 'out', amount: num(x.amount), name: x.concept, bank: defBank(x.bank) }); });
+  document.querySelectorAll('[data-ivpay]').forEach(b => b.onclick = ev => { ev.stopPropagation(); openIvaChoice(b.dataset.ivpay, b.dataset.ivl, Number(b.dataset.iva), b.dataset.ivd); });
 }
 /* Pagar desde la previsión: cada pago se anota donde corresponde */
 function payProvisionItem(i) {
   if (!i || !i.pay) return;
   const P = i.pay, defB = i.bank || mainBankId();
   if (P.t === 'iva') return openIvaChoice(P.qid, P.qlabel, i.amount, P.due);
-  if (P.t === 'fx') return openEntityModal('expensePayment', null, { expenseId: P.id, month: P.m, amount: round2(i.amount), date: todayISO(), bank: byId(state.fixedExpenses, P.id)?.bank || defB });
+  if (P.t === 'fx') return payFixed(P.id, P.m, round2(i.amount));
   const cobro = i.kind === 'in';
   askBank({ title: `${cobro ? 'Cobrar' : 'Pagar'} ${fmtMoney(i.amount)} · ${escapeHtml(i.name || i.label)}${i.invNum ? ' · fra. ' + escapeHtml(i.invNum) : ''}`, defBank: defB,
     onOk: async (bank, date) => {
@@ -3200,6 +3347,8 @@ const ENTITY_CONFIG = {
     title: 'Factura de proveedor', col: 'invoicesIn',
     fields: [
       { key:'supplierId', label:'Proveedor', type:'select', options: () => state.suppliers.map(s=>({value:s.id,label:s.name})), required:true },
+      { key:'fixedExpenseId', label:'Gasto fijo al que corresponde', type:'select', showIf: d => state.fixedExpenses.some(e => e.supplierId && e.supplierId === d.supplierId),
+        options: d => [{ value: '', label: '— Automático (por mes de cargo e importe) —' }, ...state.fixedExpenses.filter(e => e.supplierId === d.supplierId).map(e => ({ value: e.id, label: e.concept + ' · previsto ' + fmtMoney(e.amount) })), { value: 'none', label: 'No es de ningún gasto fijo (sale en Pagos a proveedores)' }] },
       { key:'number', label:'Nº de factura', type:'text' },
       { key:'date', label:'Fecha de factura', type:'date' },
       { key:'amount', label:'Importe con IVA (€)', type:'number', required:true },
@@ -3280,6 +3429,8 @@ const ENTITY_CONFIG = {
     fields: [
       { key:'concept', label:'Concepto', type:'text', required:true },
       { key:'category', label:'Categoría', type:'select', options: EXPENSE_CATEGORIES.map(c=>({value:c.id,label:c.label})) },
+      { key:'group', label:'Grupo (para ordenarlo con los de su tipo)', type:'select', options: () => [{ value: '', label: '— Automático según el concepto —' }, ...EXPENSE_GROUPS.map(g => ({ value: g.id, label: g.label }))] },
+      { key:'supplierId', label:'Proveedor que envía la factura (luz, agua, teléfono, seguro, gestoría…)', type:'select', options: () => [{ value: '', label: '— Ninguno: no llega factura —' }, ...state.suppliers.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).map(x => ({ value: x.id, label: x.name }))] },
       { key:'autoIvaCalc', label:'Calcular automáticamente: IVA estimado (21% incluido en los importes) del trimestre', type:'checkbox', showIf: d => d.category === 'impuesto' },
       { key:'amount', label:'Importe (€)', type:'number', required:true, showIf: d => !(d.category === 'impuesto' && d.autoIvaCalc) },
       { key:'bank', label:'Banco de pago habitual', type:'select', options: () => bankOptions() },
