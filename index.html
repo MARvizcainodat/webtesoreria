@@ -249,7 +249,7 @@
 (function () {
   if (typeof window.claude !== 'undefined') return;
   var CFG_KEY = 'panelTesoreriaCfg';
-  var COLS = ['clients','suppliers','works','invoicesOut','invoicesIn','fixedExpenses','fixedExpensePayments','workBudgetItems','priceListItems','invoiceOutPayments','invoiceInPayments','bankAccounts','bankBalances','oneOffExpenses','bankTransfers','materialGlossary'];
+  var COLS = ['clients','suppliers','works','invoicesOut','invoicesIn','fixedExpenses','fixedExpensePayments','workBudgetItems','priceListItems','albaranes','invoiceOutPayments','invoiceInPayments','bankAccounts','bankBalances','oneOffExpenses','bankTransfers','materialGlossary'];
   var getCfg = function () { try { return JSON.parse(localStorage.getItem(CFG_KEY) || 'null'); } catch (e) { return null; } };
   var setCfg = function (c) { try { if (c) localStorage.setItem(CFG_KEY, JSON.stringify(c)); else localStorage.removeItem(CFG_KEY); } catch (e) {} };
 
@@ -542,7 +542,7 @@ const WORK_STATUSES = ['Presupuestada', 'Contratada', 'Finalizada'];
 let db = null;
 let state = {
   clients: [], suppliers: [], works: [], invoicesOut: [], invoicesIn: [], fixedExpenses: [], fixedExpensePayments: [], bankAccounts: [], bankBalances: [], oneOffExpenses: [], bankTransfers: [],
-  workBudgetItems: [], priceListItems: [], materialGlossary: [], invoiceOutPayments: [], invoiceInPayments: [],
+  workBudgetItems: [], priceListItems: [], albaranes: [], materialGlossary: [], invoiceOutPayments: [], invoiceInPayments: [],
   loaded: { clients:false, suppliers:false, works:false, invoicesOut:false, invoicesIn:false, fixedExpenses:false, fixedExpensePayments:false, bankAccounts:false, bankBalances:false, oneOffExpenses:false, bankTransfers:false, workBudgetItems:false, priceListItems:false, materialGlossary:false, invoiceOutPayments:false, invoiceInPayments:false },
 };
 let currentSection = 'dashboard';
@@ -710,7 +710,7 @@ function parseDims(text) { const m = String(text || '').replace(/,/g, '.').match
 /* Precios de lista (ofertas puntuales con proveedor y fecha) que encajan con una partida */
 function priceHints(d) {
   const g = glossaryMatch(d.material), key = stripAcc(d.material);
-  return state.priceListItems.filter(p => {
+  return state.priceListItems.filter(p => !p.clientId).filter(p => {
     const pg = glossaryMatch(p.material);
     return (g && pg && g.id === pg.id || stripAcc(p.material).includes(key) || key.includes(stripAcc(p.material))) && (!d.finish || !p.finish || stripAcc(p.finish) === stripAcc(d.finish)) && (!num(d.thickness) || !num(p.thickness) || num(p.thickness) === num(d.thickness)) && (num(d.polishedFaces) === num(p.polishedFaces)) && (num(d.drips) === num(p.drips));
   }).sort((a, b) => (b.offerDate || '') < (a.offerDate || '') ? -1 : 1).slice(0, 4);
@@ -737,7 +737,7 @@ function workCostDetail(workId) {
   const partidas = round2(conCoste.reduce((s, i) => s + round2(num(i.quantity) * num(i.unitCost)), 0));
   const al = workAllocs(workId), material = round2(al.filter(a => a.kind === 'material').reduce((s, a) => s + a.base, 0)), otros = round2(al.filter(a => a.kind === 'otros').reduce((s, a) => s + a.base, 0));
   const usaTarifa = conCoste.length > 0;
-  return { partidas, material, otros, usaTarifa, nConCoste: conCoste.length, nSinCoste: items.length - conCoste.length, total: round2((usaTarifa ? partidas : material) + otros) };
+  return { partidas, material, otros, usaTarifa, nConCoste: conCoste.length, nSinCoste: items.length - conCoste.length, total: round2(material + otros) }; /* coste = facturas de proveedor asignadas a la obra (en dinero); las partidas con precio de compra solo sirven de referencia */
 }
 function workCostBase(workId) { return workCostDetail(workId).total; }
 function workInvoicedBase(workId) { return state.invoicesOut.filter(i=>i.workId===workId).reduce((s,i)=>s+baseOf(i),0); }
@@ -1044,7 +1044,7 @@ async function initDb() {
   await maybeSeed();
 }
 function subscribeAll() {
-  const cols = ['clients','suppliers','works','invoicesOut','invoicesIn','fixedExpenses','fixedExpensePayments','bankAccounts','bankBalances','oneOffExpenses','bankTransfers','workBudgetItems','priceListItems','materialGlossary','invoiceOutPayments','invoiceInPayments'];
+  const cols = ['clients','suppliers','works','invoicesOut','invoicesIn','fixedExpenses','fixedExpensePayments','bankAccounts','bankBalances','oneOffExpenses','bankTransfers','workBudgetItems','priceListItems','albaranes','materialGlossary','invoiceOutPayments','invoiceInPayments'];
   cols.forEach(col => {
     db.collection(col).onSnapshot(
       snap => { state[col] = snap.docs.map(d => ({ id: d.id, ...d.data() })); state.loaded[col] = true; render(); },
@@ -1717,6 +1717,7 @@ function renderClientDetail(id) {
           </table></div>
         </div>
         ${grpListHtml(id)}
+        ${clientPricesHtml(id)}
       </div>
     </div>
   `;
@@ -1732,6 +1733,58 @@ function renderClientDetail(id) {
   document.querySelectorAll('[data-iid]').forEach(tr=>tr.onclick=()=>openEntityModal('invoiceOut', tr.dataset.iid));
 }
 
+
+/* ---------- MATERIAL SERVIDO A UNA OBRA (de los albaranes) ----------
+   El albarán no tiene la obra enlazada: se reconoce por su texto de obra (se escribe copiando el nombre de la web)
+   y por el código de cliente. Se descuentan los albaranes de facturas anuladas con una rectificativa total. */
+function albaranesAnulados() {
+  const anul = new Set();
+  state.invoicesOut.forEach(f => { const m = String(f.notes || '').match(/rectificativa[^0-9]*(?:de la\s*)?(\d+\/\d{4})/i); if (m && num(f.amount) < 0) { const o = state.invoicesOut.find(x => x.number === m[1]); if (o && Math.abs(num(o.amount) + num(f.amount)) < 0.01) { anul.add(o.number); anul.add(f.number); } } });
+  return anul;
+}
+const albNum = n => { const m = String(n || '').match(/(\d+)\/(\d{4})/); return m ? `${+m[1]}/${m[2]}` : String(n || ''); };
+function obraKey(t) { return normS(String(t || '').replace(/^\s*(obra|contrato)\s*:\s*/i, '')).replace(/[^a-z0-9ñ ]/g, ' ').replace(/\s+/g, ' ').trim(); }
+function albaranesDeObra(fam) {
+  const ws = fam.map(id => byId(state.works, id)).filter(Boolean);
+  const cli = byId(state.clients, ws[0]?.clientId), code = cli ? String(num(cli.code || cli.companyCode)) : '';
+  const keys = ws.map(w => obraKey(w.name)).filter(k => k.length >= 4);
+  const codes = ws.map(w => (String(w.name).match(/\b(\d{3,5})\b/) || [])[1]).filter(Boolean);
+  const anul = albaranesAnulados();
+  return state.albaranes.filter(a => {
+    if (code && String(num(a.clienteCodigo)) !== code) return false;
+    if (anul.has(albNum(a.factura))) return false;
+    const k = obraKey(a.obra); if (!k) return false;
+    return keys.some(x => k.includes(x) || x.includes(k)) || codes.some(c => new RegExp('\\b0*' + +c + '\\b').test(k));
+  });
+}
+function servidoHtml(fam) {
+  const als = albaranesDeObra(fam); if (!als.length) return '';
+  const g = {};
+  als.forEach(a => (a.lineas || []).forEach(l => {
+    if (l.texto || !l.descripcion || /rectificativa|anulacion|albaran origen|factura \d/i.test(stripAcc(l.descripcion))) return;
+    const u = normUnit(l.unidad) || (l.unidad || '').toLowerCase(), k = normS(l.descripcion) + '|' + u;
+    const r = g[k] = g[k] || { d: l.descripcion, u, piezas: 0, metros: 0, n: new Set(), f1: a.fecha, f2: a.fecha };
+    r.piezas += num(l.cantidad); r.metros += num(l.metros); r.n.add(a.numero);
+    if ((a.fecha || '') < (r.f1 || '9')) r.f1 = a.fecha; if ((a.fecha || '') > (r.f2 || '')) r.f2 = a.fecha;
+  }));
+  const rows = Object.values(g).sort((a, b) => b.metros - a.metros || a.d.localeCompare(b.d));
+  return `<div class="card">
+    <div class="card-head"><h2>Material servido (según albaranes)</h2><span class="muted" style="font-size:12px">${als.length} albarán(es) · sin los anulados por rectificativa</span></div>
+    <div class="table-wrap"><table class="tight-m"><thead><tr><th>Material / concepto</th><th>Unidad</th><th style="text-align:right">Piezas</th><th style="text-align:right">m² / ml</th><th class="hide-m" style="text-align:right">Albaranes</th><th class="hide-m">Desde – hasta</th></tr></thead>
+      <tbody>${rows.map(r => `<tr style="cursor:default"><td>${escapeHtml(r.d)}</td><td>${escapeHtml(unitLabel(r.u) || '—')}</td><td class="num">${fmtQty(r.piezas)}</td><td class="num">${r.metros ? fmtQty(r.metros) : '—'}</td><td class="num hide-m">${r.n.size}</td><td class="mono hide-m">${fmtDate(r.f1)} – ${fmtDate(r.f2)}</td></tr>`).join('')}</tbody>
+    </table></div>
+    <div class="field-hint" style="margin-top:6px">Se reconocen por el nombre de obra escrito en el albarán. Si falta alguno, revisa que el albarán lleve el nombre de la obra igual que en la web.</div></div>`;
+}
+/* ---------- PRECIOS A UN CLIENTE (resumen sacado de sus facturas: una línea por material + unidad + precio) ---------- */
+function clientPricesHtml(clientId) {
+  const ps = state.priceListItems.filter(p => p.clientId === clientId).sort((a, b) => (a.material || '').localeCompare(b.material || '') || num(a.price) - num(b.price));
+  if (!ps.length) return '';
+  return `<div class="card">
+    <div class="card-head"><h2>Precios a este cliente</h2><span class="muted" style="font-size:12px">sacados de sus facturas · una línea por precio distinto</span></div>
+    <div class="table-wrap"><table class="tight-m"><thead><tr><th>Material / concepto</th><th>Unidad</th><th style="text-align:right">Precio</th><th class="hide-m" style="text-align:right">Veces</th><th class="hide-m" style="text-align:right">Cantidad</th><th class="hide-m">Primera – última</th><th class="hide-m">Facturas</th></tr></thead>
+      <tbody>${ps.map(p => `<tr style="cursor:default${p.alert ? ';background:var(--warn-bg, #fff4dc)' : ''}"><td>${escapeHtml(p.material)}${p.alert ? `<div style="font-size:12px;color:var(--expense)">⚠ ${escapeHtml(p.alert)}</div>` : ''}</td><td>${escapeHtml(unitLabel(p.unit) || p.unit || '—')}</td><td class="num">${fmtMoney(p.price)}</td><td class="num hide-m">${num(p.times) || ''}</td><td class="num hide-m">${p.quantity ? fmtQty(p.quantity) : ''}</td><td class="mono hide-m">${fmtDate(p.firstDate)} – ${fmtDate(p.offerDate)}</td><td class="mono hide-m" style="font-size:12px">${escapeHtml((p.invoices || []).join(', '))}</td></tr>`).join('')}</tbody>
+    </table></div></div>`;
+}
 /* ---------- PAGO AGRUPADO (fichas de cliente y de proveedor) ----------
    Un mismo pago (pagaré, confirming, cheque o transferencia) que paga varias facturas a la vez.
    Cada pago se guarda UNA vez con su importe real y su reparto (allocations) entre facturas.
@@ -2493,7 +2546,7 @@ function renderWorkDetail(id) {
     </div>
     ${over?`<div class="banner-critical">⚠ ${escapeHtml(overBudgetInfo(id).text)}. Esta obra va a dar pérdidas si no se revisa.</div>`:''}
     <div class="kpi-row">
-      <div class="kpi"><div class="label">Presupuesto ofrecido</div><div class="value">${fmtMoney(budget)}</div></div>
+      ${budget ? `<div class="kpi"><div class="label">Presupuesto ofrecido</div><div class="value">${fmtMoney(budget)}</div></div>` : ''}
       <div class="kpi"><div class="label">Facturado al cliente (sin IVA)</div><div class="value income">${fmtMoney(facturado)}</div></div>
       <div class="kpi"><div class="label">Coste (sin IVA)</div><div class="value expense">${fmtMoney(coste)}</div></div>
       <div class="kpi"><div class="label">Beneficio actual (sin IVA)</div><div class="value" style="color:${facturado-coste>=0?'var(--income)':'var(--expense)'}">${fmtMoney(facturado-coste)}</div></div>
@@ -2508,13 +2561,10 @@ function renderWorkDetail(id) {
     </div>`}
     <div class="card"><div class="muted" style="font-size:12.5px">
       <strong>Cómo sale el coste${pptos.length ? ' (solo las partidas propias de la obra; cada presupuesto tiene el suyo)' : ''}:</strong>
-      ${cd.usaTarifa
-        ? `material según precio de compra de ${cd.nConCoste} partida(s) <strong>${fmtMoney(cd.partidas)}</strong>`
-        : `material según facturas de proveedor imputadas <strong>${fmtMoney(cd.material)}</strong> (ninguna partida tiene precio de compra)`}
-      + otros gastos imputados (portes, colocación…) <strong>${fmtMoney(cd.otros)}</strong> = <strong>${fmtMoney(cd.total)}</strong>.
-      ${cd.usaTarifa && cd.material ? `<br>Material imputado de facturas de proveedor: ${fmtMoney(cd.material)} (no se suma, sirve para comparar con el precio de compra).` : ''}
-      ${cd.nSinCoste ? `<br><span style="color:var(--warn)">${cd.nSinCoste} partida(s) sin precio de compra${cd.usaTarifa ? ': su material no cuenta en el coste' : ''}. Pulsa una partida para elegir su precio en la tarifa del proveedor.</span>` : ''}
+      material y otros gastos según las <strong>facturas de proveedor asignadas a la obra</strong> (en dinero): material <strong>${fmtMoney(cd.material)}</strong> + otros (portes, colocación…) <strong>${fmtMoney(cd.otros)}</strong> = <strong>${fmtMoney(cd.total)}</strong>.
+      ${cd.partidas ? `<br><span class="muted">Referencia: según el precio de compra de ${cd.nConCoste} partida(s) el material saldría por ${fmtMoney(cd.partidas)} (no se suma).</span>` : ''}
     </div></div>
+    ${servidoHtml(fam)}
     <div class="card">
       <div class="card-head"><h2>Partidas del presupuesto</h2><button class="btn btn-sm" id="addItem">+ Partida</button></div>
       <div class="table-wrap"><table><thead><tr><th>Material / pieza</th><th>Medidas</th><th>Cantidad</th><th>Precio unitario</th><th>Subtotal</th><th>Coste unitario</th><th>Beneficio</th></tr></thead>
@@ -3559,7 +3609,7 @@ function bindAllocations(root, rerender) {
 /* Precio de compra desde la tarifa de proveedores: primero los que encajan con la partida */
 function tariffPickHtml(d) {
   const hintIds = new Set(priceHints(d).map(p => p.id));
-  const opts = state.priceListItems.filter(p => !num(d.thickness) || !num(p.thickness) || num(p.thickness) === num(d.thickness))
+  const opts = state.priceListItems.filter(p => !p.clientId).filter(p => !num(d.thickness) || !num(p.thickness) || num(p.thickness) === num(d.thickness))
     .sort((a, b) => (hintIds.has(b.id) - hintIds.has(a.id)) || ((b.offerDate || '') < (a.offerDate || '') ? -1 : 1));
   if (!state.priceListItems.length) return '<div class="field-hint">No hay tarifas de proveedor: añádelas en la ficha del proveedor («Tabla de precios») para poder elegir aquí el precio de compra.</div>';
   return `<div class="form-row"><label>Tomar el precio de compra de la tarifa de un proveedor${num(d.thickness) ? ` (grosor ${fmtQty(d.thickness)} cm)` : ''}</label>
