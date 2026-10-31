@@ -759,10 +759,10 @@ function workUnitProfit(workId) {
 /* Aviso de sobrecoste: se vende alguna partida por debajo de su coste de compra, o el coste de proveedores (sin IVA)
    supera lo presupuestado y lo facturado (sin IVA). Muchas obras no tienen medición total: por eso no basta comparar con el presupuesto. */
 function overBudgetInfo(workId) {
+  /* Norma de Mª José: solo hay aviso de sobrecoste cuando el beneficio por partidas (venta − compra) × cantidad es NEGATIVO.
+     Comparar facturas de proveedor con lo facturado no sirve: la factura del proveedor suele llegar antes que el albarán al cliente. */
   const up = workUnitProfit(workId);
-  if (up.loss.length) return { over: true, text: `Se vende por debajo del coste de compra en ${up.loss.length} partida(s): ${up.loss.slice(0,3).map(i=>`${i.material} (venta ${fmtMoney(i.unitPrice)}, compra ${fmtMoney(i.unitCost)})`).join('; ')}${up.loss.length>3?'…':''}` };
-  const budget = workBudgetTotal(workId), ref = Math.max(budget, workInvoicedBase(workId)), cost = workCostBase(workId);
-  if (budget > 0 && cost > ref + 0.005) return { over: true, text: `El coste de proveedores sin IVA (${fmtMoney(cost)}) supera lo presupuestado o facturado sin IVA (${fmtMoney(ref)})` };
+  if (up.n && up.total < -0.005) return { over: true, text: `Beneficio por partidas negativo (${fmtMoney(up.total)})${up.loss.length ? ': se vende por debajo del coste de compra en ' + up.loss.slice(0,3).map(i=>`${i.material} (venta ${fmtMoney(i.unitPrice)}, compra ${fmtMoney(i.unitCost)})`).join('; ') : ''}` };
   return { over: false, text: '' };
 }
 function isOverBudget(workId) { return overBudgetInfo(workId).over; }
@@ -2518,7 +2518,7 @@ function renderWorks() {
   document.querySelectorAll('[data-gid]').forEach(tr => tr.onclick = () => openEntityModal('glossaryItem', tr.dataset.gid));
   document.getElementById('addWork').onclick = () => openEntityModal('work');
   setupListSearch('works', 'qWork', rows, r => [r.w.name, byId(state.clients, r.w.clientId)?.name, r.w.address, r.w.notes, r.w.foremanName, r.w.status, r.pptos].join(' '), r => '', r => r.w.name,
-    r => `<tr data-id="${r.w.id}" style="cursor:pointer"><td>${escapeHtml(r.w.name)}${nPptoPill(r.w.id)}${r.over?' <span class="pill pill-critical">Sobrecoste</span>':''}</td><td class="muted">${escapeHtml(byId(state.clients,r.w.clientId)?.name||'—')}</td><td>${r.w.status?`<span class="pill pill-info">${escapeHtml(r.w.status)}</span>`:'<span class="muted">—</span>'}</td><td class="num">${fmtMoney(r.budget)}</td><td class="num">${fmtMoney(r.facturado)}</td><td class="num" style="${r.over?'color:var(--critical);font-weight:700':''}">${fmtMoney(r.coste)}</td><td class="num" style="color:${r.beneficio>=0?'var(--income)':'var(--expense)'}">${fmtMoney(r.beneficio)}</td></tr>`,
+    r => `<tr data-id="${r.w.id}" style="cursor:pointer"><td>${escapeHtml(r.w.name)}${nPptoPill(r.w.id)}${r.over?' <span class="pill pill-critical">Sobrecoste</span>':''}</td><td class="muted">${escapeHtml(byId(state.clients,r.w.clientId)?.name||'—')}</td><td>${r.w.status?`<span class="pill pill-info">${escapeHtml(r.w.status)}</span>`:'<span class="muted">—</span>'}</td><td class="num">${fmtMoney(r.budget)}</td><td class="num">${fmtMoney(r.facturado)}</td><td class="num" style="${r.over?'color:var(--critical);font-weight:700':''}">${fmtMoney(r.coste)}</td><td class="num" style="color:${'var(--ink)'}">${fmtMoney(r.beneficio)}</td></tr>`,
     id => { currentDetail = {type:'work', id}; render(); }, 7);
 }
 
@@ -2544,12 +2544,11 @@ function renderWorkDetail(id) {
         <button class="btn btn-danger" id="delW">Eliminar</button>
       </div>
     </div>
-    ${over?`<div class="banner-critical">⚠ ${escapeHtml(overBudgetInfo(id).text)}. Esta obra va a dar pérdidas si no se revisa.</div>`:''}
     <div class="kpi-row">
       ${budget ? `<div class="kpi"><div class="label">Presupuesto ofrecido</div><div class="value">${fmtMoney(budget)}</div></div>` : ''}
       <div class="kpi"><div class="label">Facturado al cliente (sin IVA)</div><div class="value income">${fmtMoney(facturado)}</div></div>
       <div class="kpi"><div class="label">Coste (sin IVA)</div><div class="value expense">${fmtMoney(coste)}</div></div>
-      <div class="kpi"><div class="label">Beneficio actual (sin IVA)</div><div class="value" style="color:${facturado-coste>=0?'var(--income)':'var(--expense)'}">${fmtMoney(facturado-coste)}</div></div>
+      <div class="kpi"><div class="label">Facturado − facturas de proveedor (sin IVA)</div><div class="value">${fmtMoney(facturado-coste)}</div><div class="muted" style="font-size:11px">provisional: la factura del proveedor suele llegar antes que la venta</div></div>
       ${unitProfit.n?`<div class="kpi"><div class="label">Beneficio por partidas (venta − compra) × cantidad</div><div class="value" style="color:${unitProfit.total>=0?'var(--income)':'var(--expense)'}">${fmtMoney(unitProfit.total)}</div></div>`:''}
     </div>
     ${esPpto ? '' : `<div class="card">
