@@ -448,7 +448,7 @@ const SECTIONS = [
   { id: 'provision', label: 'Previsión' },
   { id: 'balance', label: 'Balance financiero' },
   { id: 'effects', label: 'Control de efectos' },
-  { id: 'import', label: 'Importar facturas' },
+  { id: 'import', label: 'Importar facturas', hidden: true }, /* oculta de momento: la pantalla sigue en el código */
 ];
 
 const PAYMENT_METHODS = ['Transferencia', 'Domiciliado', 'Tarjeta', 'Pagaré', 'Confirming', 'Cheque', 'Efectivo'];
@@ -502,7 +502,7 @@ function linkIndex() {
   if (_lk && key.every((v, k) => v === _lk.key[k])) return _lk;
   const byExp = {}, inv2exp = {}, bySup = {}, linesByInv = {};
   state.fixedExpenses.filter(e => e.supplierId).forEach(e => (bySup[e.supplierId] = bySup[e.supplierId] || []).push(e));
-  allInLines().forEach(l => (linesByInv[l.invoiceId] = linesByInv[l.invoiceId] || []).push(l));
+  state.invoicesIn.forEach(inv => inLines(inv).forEach(l => (linesByInv[inv.id] = linesByInv[inv.id] || []).push({ ...l, supplierId: inv.supplierId, invoiceNumber: inv.number, invoiceId: inv.id })));
   const chargeMonth = inv => { const d = (linesByInv[inv.id] || []).map(l => l.dueDate).filter(isoOk).sort()[0] || (isoOk(inv.dueDate) ? inv.dueDate : '') || inv.date || ''; return String(d).slice(0, 7); };
   const put = (e, inv, m) => { inv2exp[inv.id] = e.id; ((byExp[e.id] = byExp[e.id] || {})[m] = byExp[e.id][m] || []).push(...(linesByInv[inv.id] || [])); };
   const groups = {};
@@ -598,12 +598,12 @@ function showToast(msg) {
    · En Control de efectos, remesas, previsión y bancos sale una sola vez, con su importe real.
    · En cada factura sale solo la parte que le toca (un «trozo», que no se edita desde la factura). */
 const isGrpPay = p => !!p && !p.invoiceId && Array.isArray(p.allocations) && p.allocations.length > 0;
-function grpPieces(invId) {
+function grpPieces(invId, isOut = true) {
   const r = [];
-  state.invoiceOutPayments.forEach(p => { if (!isGrpPay(p)) return; p.allocations.forEach(a => { if (a.invoiceId === invId) r.push({ ...p, invoiceId: invId, amount: round2(num(a.amount)), _grp: true, _grpTotal: round2(num(p.amount)) }); }); });
+  (isOut ? state.invoiceOutPayments : state.invoiceInPayments).forEach(p => { if (!isGrpPay(p)) return; p.allocations.forEach(a => { if (a.invoiceId === invId) r.push({ ...p, invoiceId: invId, amount: round2(num(a.amount)), _grp: true, _grpTotal: round2(num(p.amount)) }); }); });
   return r;
 }
-function grpInvoiceNumbers(p) { return (p.allocations || []).map(a => byId(state.invoicesOut, a.invoiceId)?.number || '¿factura borrada?').join(', '); }
+function grpInvoiceNumbers(p, isOut = true) { return (p.allocations || []).map(a => byId(isOut ? state.invoicesOut : state.invoicesIn, a.invoiceId)?.number || '¿factura borrada?').join(', '); }
 function outLines(inv) {
   const pieces = grpPieces(inv.id);
   const custom = [...state.invoiceOutPayments.filter(p => p.invoiceId === inv.id), ...pieces];
@@ -613,7 +613,10 @@ function outLines(inv) {
   return custom;
 }
 function inLines(inv) {
-  const custom = state.invoiceInPayments.filter(p => p.invoiceId === inv.id);
+  const pieces = grpPieces(inv.id, false);
+  const custom = [...state.invoiceInPayments.filter(p => p.invoiceId === inv.id), ...pieces];
+  /* si los pagos agrupados no cubren toda la factura, lo que falta sale como resto pendiente */
+  if (pieces.length) { const resto = round2(num(inv.amount) - custom.reduce((s, l) => s + num(l.amount), 0)); if (resto > 0.005) custom.push({ id:null, invoiceId:inv.id, amount:resto, date:inv.date, dueDate:inv.dueDate, method:inv.paymentMethod || 'Transferencia', note:'', paid:false, paidDate:'', paidBank:'', _implicit:true, _resto:true }); }
   if (!custom.length) return [{ id:null, invoiceId:inv.id, amount:Number(inv.amount||0), date:inv.date, dueDate:inv.dueDate, method:inv.paymentMethod||'Transferencia', note:inv.note||'', paid:!!inv.paid, paidDate:inv.paidDate||'', paidBank:inv.paidBank||'', issuingBank:inv.issuingBank||'', emissionDate:inv.emissionDate||'', _implicit:true }];
   return custom;
 }
@@ -630,7 +633,9 @@ function allOutLines() {
 }
 function allInLines() {
   const arr = [];
-  state.invoicesIn.forEach(inv => inLines(inv).forEach(l => arr.push({ ...l, supplierId: inv.supplierId, invoiceNumber: inv.number, invoiceId: inv.id })));
+  state.invoicesIn.forEach(inv => inLines(inv).forEach(l => { if (!l._grp) arr.push({ ...l, supplierId: inv.supplierId, invoiceNumber: inv.number, invoiceId: inv.id }); }));
+  /* cada pago agrupado a proveedor, una sola vez y con su importe real */
+  state.invoiceInPayments.filter(isGrpPay).forEach(p => { const first = p.allocations[0].invoiceId; arr.push({ ...p, supplierId: p.supplierId || byId(state.invoicesIn, first)?.supplierId, invoiceNumber: grpInvoiceNumbers(p, false), invoiceId: first, _grpHead: true }); });
   return arr;
 }
 
@@ -1113,7 +1118,7 @@ function renderNoDb() {
 // ---------- nav ----------
 function renderNav() {
   const nav = document.getElementById('navList');
-  nav.innerHTML = SECTIONS.map(s => {
+  nav.innerHTML = SECTIONS.filter(s => !s.hidden).map(s => {
     let alerts = 0, crit = false;
     if (s.id === 'dashboard') { alerts = countAlerts(); crit = countCriticalAlerts() > 0; }
     if (s.id === 'effects') alerts = countEffectAlerts();
@@ -1122,7 +1127,7 @@ function renderNav() {
   }).join('');
   nav.querySelectorAll('button').forEach(b => b.onclick = () => { currentSection = b.dataset.sec; currentDetail = {type:null,id:null}; render(); });
   const mobileNav = document.getElementById('mobileNav');
-  mobileNav.innerHTML = SECTIONS.map(s => `<option value="${s.id}" ${currentSection===s.id?'selected':''}>${s.label}</option>`).join('');
+  mobileNav.innerHTML = SECTIONS.filter(s => !s.hidden).map(s => `<option value="${s.id}" ${currentSection===s.id?'selected':''}>${s.label}</option>`).join('');
   mobileNav.onchange = () => { currentSection = mobileNav.value; currentDetail = {type:null,id:null}; render(); };
 }
 function countAlerts() {
@@ -1697,7 +1702,7 @@ function renderClientDetail(id) {
           </table></div>
         </div>
         <div class="card">
-          <div class="card-head"><h2>Facturas emitidas</h2><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm" id="addGrp" title="Varios pagarés que pagan varias facturas a la vez">+ Pagarés agrupados</button><button class="btn btn-sm" id="addInv">+ Factura</button></div></div>
+          <div class="card-head"><h2>Facturas emitidas</h2><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm" id="addGrp" title="Un mismo pago (pagarés, confirming o transferencia) que paga varias facturas">+ Pago agrupado</button><button class="btn btn-sm" id="addInv">+ Factura</button></div></div>
           <div class="table-wrap"><table class="tight-m">
             <thead><tr><th>Nº</th><th class="hide-m">Fecha</th><th class="hide-m">Obra</th><th class="hide-m">Vencimiento</th><th class="hide-m">Forma de pago</th><th>Importe</th><th>Estado</th><th></th></tr></thead>
             <tbody>
@@ -1716,8 +1721,8 @@ function renderClientDetail(id) {
     </div>
   `;
   document.getElementById('back').onclick = () => { currentDetail = {type:null,id:null}; render(); };
-  document.getElementById('addGrp').onclick = () => openGroupedPagaresModal(id);
-  document.querySelectorAll('[data-delgrp]').forEach(b => b.onclick = (e) => { e.stopPropagation(); const p = state.invoiceOutPayments.find(x => x.id === b.dataset.delgrp); if (!p) return; confirmDelete('invoiceOutPayments', p.id, `${p.method || 'Pagaré'}${p.effectNumber ? ' nº ' + p.effectNumber : ''} de ${fmtMoney(p.amount)} (fras ${grpInvoiceNumbers(p)})`, () => render()); });
+  document.getElementById('addGrp').onclick = () => openGroupedPayModal(id, true);
+  bindGrpDelete();
   document.getElementById('editC').onclick = () => openEntityModal('client', id);
   document.getElementById('delC').onclick = () => confirmDelete('clients', id, c.name, () => { currentDetail={type:null,id:null}; render(); });
   document.getElementById('addWork').onclick = () => openEntityModal('work', null, { clientId: id });
@@ -1727,30 +1732,52 @@ function renderClientDetail(id) {
   document.querySelectorAll('[data-iid]').forEach(tr=>tr.onclick=()=>openEntityModal('invoiceOut', tr.dataset.iid));
 }
 
-/* ---------- PAGARÉS AGRUPADOS (ficha del cliente) ---------- */
-function grpListHtml(clientId) {
-  const ps = state.invoiceOutPayments.filter(p => isGrpPay(p) && (p.clientId || byId(state.invoicesOut, p.allocations[0].invoiceId)?.clientId) === clientId)
-    .sort((a, b) => (a.dueDate || '') < (b.dueDate || '') ? -1 : 1);
+/* ---------- PAGO AGRUPADO (fichas de cliente y de proveedor) ----------
+   Un mismo pago (pagaré, confirming, cheque o transferencia) que paga varias facturas a la vez.
+   Cada pago se guarda UNA vez con su importe real y su reparto (allocations) entre facturas.
+   · Pagaré / confirming / cheque: queda en cartera (clientes) o emitido (proveedores) y sale en Control de efectos.
+   · Transferencia: se apunta ya cobrada / pagada, con su fecha y banco; sale en Bancos como un solo movimiento. */
+const GRP_METHODS = [...EFFECT_METHODS, 'Transferencia'];
+function grpCfg(isOut) {
+  return isOut
+    ? { payCol: 'invoiceOutPayments', invCol: 'invoicesOut', party: 'clientId', done: 'collected', dDate: 'collectedDate', dBank: 'collectedBank', got: effectReceived, Done: 'Cobrado', who: 'cliente', verb: 'cobro' }
+    : { payCol: 'invoiceInPayments', invCol: 'invoicesIn', party: 'supplierId', done: 'paid', dDate: 'paidDate', dBank: 'paidBank', got: effectIssued, Done: 'Pagado', who: 'proveedor', verb: 'pago' };
+}
+function grpListHtml(partyId, isOut = true) {
+  const G = grpCfg(isOut);
+  const ps = state[G.payCol].filter(p => isGrpPay(p) && (p[G.party] || byId(state[G.invCol], p.allocations[0].invoiceId)?.[G.party]) === partyId)
+    .sort((a, b) => ((a.dueDate || a.date || '') < (b.dueDate || b.date || '') ? -1 : 1));
   if (!ps.length) return '';
-  const st = p => p.collected ? `<span class="pill pill-income">Cobrado ${fmtDate(p.collectedDate)}</span>` : p.remesado ? `<span class="pill pill-info">Remesado ${fmtDate(p.remittanceDate)}</span>` : '<span class="pill pill-neutral">En cartera</span>';
-  const rep = p => p.allocations.map(a => `${escapeHtml(byId(state.invoicesOut, a.invoiceId)?.number || '¿?')}: ${fmtMoney(a.amount)}`).join('<br>');
+  const st = p => p[G.done] ? `<span class="pill pill-income">${G.Done} ${fmtDate(p[G.dDate])}</span>` : (isOut && p.remesado) ? `<span class="pill pill-info">Remesado ${fmtDate(p.remittanceDate)}</span>` : `<span class="pill pill-neutral">${isOut ? 'En cartera' : 'Emitido'}</span>`;
+  const rep = p => p.allocations.map(a => `${escapeHtml(byId(state[G.invCol], a.invoiceId)?.number || '¿?')}: ${fmtMoney(a.amount)}`).join('<br>');
   return `<div class="card">
-    <div class="card-head"><h2>Pagarés agrupados</h2></div>
+    <div class="card-head"><h2>Pagos agrupados</h2></div>
     <div class="table-wrap"><table class="tight-m">
-      <thead><tr><th>Nº</th><th class="hide-m">Emisión</th><th>Vto.</th><th style="text-align:right">Importe</th><th class="hide-m">Facturas que paga</th><th class="hide-m">Estado</th><th></th></tr></thead>
-      <tbody>${ps.map(p => `<tr style="cursor:default"><td class="mono"><span class="hide-m">${escapeHtml(p.method || 'Pagaré')} </span>${p.effectNumber ? escapeHtml(p.effectNumber) : '—'}</td><td class="mono hide-m">${fmtDate(p.emissionDate)}</td><td class="mono">${fmtDate(p.dueDate)}</td><td class="num">${fmtMoney(p.amount)}</td><td class="mono hide-m" style="font-size:12px">${rep(p)}</td><td class="hide-m">${st(p)}</td><td><button class="link-btn" data-delgrp="${p.id}" style="color:var(--expense)">Quitar</button></td></tr>`).join('')}</tbody>
+      <thead><tr><th>Forma · nº</th><th class="hide-m">Emisión / fecha</th><th>Vto.</th><th style="text-align:right">Importe</th><th class="hide-m">Facturas que paga</th><th class="hide-m">Estado</th><th></th></tr></thead>
+      <tbody>${ps.map(p => `<tr style="cursor:default"><td class="mono"><span class="hide-m">${escapeHtml(p.method || 'Pagaré')} </span>${p.effectNumber ? escapeHtml(p.effectNumber) : (EFFECT_METHODS.includes(p.method) ? '—' : '<span class="muted">transf.</span>')}</td><td class="mono hide-m">${fmtDate(p.emissionDate || p.date)}</td><td class="mono">${fmtDate(p.dueDate)}</td><td class="num">${fmtMoney(p.amount)}</td><td class="mono hide-m" style="font-size:12px">${rep(p)}</td><td class="hide-m">${st(p)}</td><td><button class="link-btn" data-delgrp="${p.id}" data-grpout="${isOut ? 1 : 0}" style="color:var(--expense)">Quitar</button></td></tr>`).join('')}</tbody>
     </table></div></div>`;
 }
-/* Lo que falta por cubrir de una factura (importe − cobros y pagarés ya apuntados, incluidos los agrupados) */
-function outUncovered(inv) {
-  const lineas = [...state.invoiceOutPayments.filter(p => p.invoiceId === inv.id), ...grpPieces(inv.id)];
-  if (!lineas.length) return inv.collected ? 0 : round2(num(inv.amount));
-  const pagos = lineas.filter(p => p.collected || effectReceived(p)); /* un resto «sin recibir» sigue por cubrir */
+/* Al pulsar «Quitar» en la tabla de pagos agrupados de una ficha */
+function bindGrpDelete() {
+  document.querySelectorAll('[data-delgrp]').forEach(b => b.onclick = (e) => {
+    e.stopPropagation();
+    const isOut = b.dataset.grpout !== '0', G = grpCfg(isOut);
+    const p = state[G.payCol].find(x => x.id === b.dataset.delgrp); if (!p) return;
+    confirmDelete(G.payCol, p.id, `${p.method || 'Pago'}${p.effectNumber ? ' nº ' + p.effectNumber : ''} de ${fmtMoney(p.amount)} (fras ${grpInvoiceNumbers(p, isOut)})`, () => render());
+  });
+}
+/* Lo que falta por cubrir de una factura (importe − cobros/pagos y efectos ya apuntados, incluidos los agrupados) */
+function grpUncovered(inv, isOut = true) {
+  const G = grpCfg(isOut);
+  const lineas = [...state[G.payCol].filter(p => p.invoiceId === inv.id), ...grpPieces(inv.id, isOut)];
+  if (!lineas.length) return inv[G.done] ? 0 : round2(num(inv.amount));
+  const pagos = lineas.filter(p => p[G.done] || G.got(p)); /* un resto «sin recibir / sin emitir» sigue por cubrir */
   return round2(num(inv.amount) - pagos.reduce((s, p) => s + num(p.amount), 0));
 }
-/* Reparto: las facturas se rellenan por orden y los pagarés por orden de vencimiento; lo que sobra de un pagaré pasa a la siguiente factura */
-function grpAllocate(invs, pags) {
-  const left = invs.map(i => Math.round(outUncovered(i) * 100));
+const outUncovered = inv => grpUncovered(inv, true);
+/* Reparto: las facturas se rellenan por orden y los pagos por orden de vencimiento (o fecha); lo que sobra de un pago pasa a la siguiente factura */
+function grpAllocate(invs, pags, isOut = true) {
+  const left = invs.map(i => Math.round(grpUncovered(i, isOut) * 100));
   let k = 0;
   return pags.map(p => {
     let rest = Math.round(num(p.amount) * 100); const al = [];
@@ -1763,101 +1790,114 @@ function nextEffectNumber(s) {
   const n = String(BigInt(d) + 1n).padStart(d.length, '0');
   return /\./.test(s) ? n.replace(/\B(?=(\d{3})+(?!\d))/g, '.') : n;
 }
-function openGroupedPagaresModal(clientId) {
-  const c = byId(state.clients, clientId); if (!c) return;
-  const cand = state.invoicesOut.filter(i => i.clientId === clientId && outUncovered(i) > 0.005)
+const openGroupedPagaresModal = clientId => openGroupedPayModal(clientId, true);
+function openGroupedPayModal(partyId, isOut = true) {
+  const G = grpCfg(isOut);
+  const party = byId(isOut ? state.clients : state.suppliers, partyId); if (!party) return;
+  const cand = state[G.invCol].filter(i => i[G.party] === partyId && grpUncovered(i, isOut) > 0.005)
     .sort((a, b) => ((a.date || '') + (a.number || '')).localeCompare((b.date || '') + (b.number || '')));
   const sel = new Set();
-  let method = 'Pagaré';
-  const pags = [{ effectNumber: '', emissionDate: '', dueDate: '', amount: '', issuingBank: '' }];
+  let method = GRP_METHODS.includes(party.paymentMethod) ? party.paymentMethod : (isOut ? 'Pagaré' : 'Transferencia');
+  const isEff = () => EFFECT_METHODS.includes(method);
+  const pags = [{ effectNumber: '', emissionDate: '', dueDate: '', date: todayISO(), amount: '', issuingBank: '', bank: mainBankId(), note: '' }];
   const root = document.getElementById('modalRoot');
   const selInvs = () => cand.filter(i => sel.has(i.id));
-  const sortedPags = () => pags.map((p, ix) => ({ ...p, ix })).filter(p => num(p.amount) > 0).sort((a, b) => (a.dueDate || '9999') < (b.dueDate || '9999') ? -1 : (a.dueDate || '9999') > (b.dueDate || '9999') ? 1 : a.ix - b.ix);
+  const keyDate = p => (isEff() ? p.dueDate : p.date) || '9999';
+  const sortedPags = () => pags.map((p, ix) => ({ ...p, ix })).filter(p => num(p.amount) > 0).sort((a, b) => keyDate(a) < keyDate(b) ? -1 : keyDate(a) > keyDate(b) ? 1 : a.ix - b.ix);
+  const ourBanks = bankOptions(false).filter(o => o.value !== '');
+  const bankSel = (p, ix, field) => `<select data-pf="${field}" data-ix="${ix}">${ourBanks.map(o => `<option value="${escapeHtml(o.value)}" ${o.value === p[field] ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}</select>`;
+  const issuingSel = (p, ix) => `<select data-pf="issuingBank" data-ix="${ix}"><option value="">— Sin indicar —</option>${ourBanks.filter(o => o.value !== CASH).map(o => `<option ${o.label === p.issuingBank ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}</select>`;
   const pagRow = (p, ix) => `<div class="grp-pag">
-      <div><label>Nº pagaré</label><input data-pf="effectNumber" data-ix="${ix}" value="${escapeHtml(p.effectNumber)}" placeholder="6.606.926"></div>
+      ${isEff() ? `
+      <div><label>Nº ${method === 'Confirming' ? 'confirming' : method === 'Cheque' ? 'cheque' : 'pagaré'}</label><input data-pf="effectNumber" data-ix="${ix}" value="${escapeHtml(p.effectNumber)}" placeholder="6.606.926"></div>
       <div><label>Fecha emisión</label><input type="date" data-pf="emissionDate" data-ix="${ix}" value="${p.emissionDate}"></div>
       <div><label>Vencimiento</label><input type="date" data-pf="dueDate" data-ix="${ix}" value="${p.dueDate}"></div>
       <div><label>Importe (€)</label><input type="number" step="0.01" inputmode="decimal" data-pf="amount" data-ix="${ix}" value="${p.amount}" style="text-align:right"></div>
-      <div><label>Banco emisor</label><input data-pf="issuingBank" data-ix="${ix}" value="${escapeHtml(p.issuingBank)}" placeholder="Banco emisor"></div>
+      <div><label>${isOut ? 'Banco emisor' : 'Banco (nuestro)'}</label>${isOut ? `<input data-pf="issuingBank" data-ix="${ix}" value="${escapeHtml(p.issuingBank)}" placeholder="Banco emisor">` : issuingSel(p, ix)}</div>` : `
+      <div><label>Fecha de la transferencia</label><input type="date" data-pf="date" data-ix="${ix}" value="${p.date}"></div>
+      <div><label>Importe (€)</label><input type="number" step="0.01" inputmode="decimal" data-pf="amount" data-ix="${ix}" value="${p.amount}" style="text-align:right"></div>
+      <div><label>${isOut ? 'Entró en (banco)' : 'Salió de (banco)'}</label>${bankSel(p, ix, 'bank')}</div>
+      <div><label>Concepto / referencia</label><input data-pf="note" data-ix="${ix}" value="${escapeHtml(p.note)}" placeholder="opcional"></div>`}
       ${pags.length > 1 ? `<button type="button" class="link-btn" data-delp="${ix}" style="color:var(--expense);flex:0 0 auto;padding-bottom:6px">Quitar</button>` : ''}</div>`;
+  const lbl = () => isEff() ? (method === 'Confirming' ? 'confirmings' : method === 'Cheque' ? 'cheques' : 'pagarés') : 'transferencias';
   const summary = () => {
     const invs = selInvs(), sp = sortedPags();
-    const tF = round2(invs.reduce((s, i) => s + outUncovered(i), 0)), tP = round2(sp.reduce((s, p) => s + num(p.amount), 0)), dif = round2(tP - tF);
-    const al = grpAllocate(invs, sp);
+    const tF = round2(invs.reduce((s, i) => s + grpUncovered(i, isOut), 0)), tP = round2(sp.reduce((s, p) => s + num(p.amount), 0)), dif = round2(tP - tF);
+    const al = grpAllocate(invs, sp, isOut);
     let msg = '';
-    if (!invs.length) msg = '<span class="muted">Marca las facturas que pagan estos pagarés.</span>';
-    else if (!sp.length) msg = '<span class="muted">Escribe los pagarés.</span>';
-    else if (dif > 0.005) msg = `<span style="color:var(--expense);font-weight:600">Los pagarés suman ${fmtMoney(dif)} más que las facturas marcadas: revisa los importes o marca otra factura.</span>`;
-    else if (dif < -0.005) msg = `<span style="color:var(--warn);font-weight:600">Los pagarés suman ${fmtMoney(-dif)} menos que las facturas: esa cantidad quedará pendiente en la última factura.</span>`;
-    else msg = '<span style="color:var(--income);font-weight:600">Cuadra: los pagarés pagan justo las facturas marcadas.</span>';
-    const table = invs.length && sp.length ? `<div class="table-wrap" style="margin-top:8px"><table style="font-size:12.5px"><thead><tr><th>Pagaré</th><th>Vto.</th><th style="text-align:right">Importe</th>${invs.map(i => `<th style="text-align:right">Fra ${escapeHtml(i.number || '')}</th>`).join('')}</tr></thead><tbody>
-      ${sp.map((p, k) => `<tr style="cursor:default"><td class="mono">${escapeHtml(p.effectNumber || '—')}</td><td class="mono">${fmtDate(p.dueDate)}</td><td class="num">${fmtMoney(p.amount)}</td>${invs.map(i => { const a = al[k].allocations.find(x => x.invoiceId === i.id); return `<td class="num">${a ? fmtMoney(a.amount) : ''}</td>`; }).join('')}</tr>`).join('')}
+    if (!invs.length) msg = '<span class="muted">Marca las facturas que se pagan.</span>';
+    else if (!sp.length) msg = `<span class="muted">Escribe ${isEff() ? 'los ' + lbl() : 'la transferencia'}.</span>`;
+    else if (dif > 0.005) msg = `<span style="color:var(--expense);font-weight:600">El pago suma ${fmtMoney(dif)} más que las facturas marcadas: revisa los importes o marca otra factura.</span>`;
+    else if (dif < -0.005) msg = `<span style="color:var(--warn);font-weight:600">El pago suma ${fmtMoney(-dif)} menos que las facturas: esa cantidad quedará pendiente en la última factura.</span>`;
+    else msg = '<span style="color:var(--income);font-weight:600">Cuadra: el pago cubre justo las facturas marcadas.</span>';
+    const table = invs.length && sp.length ? `<div class="table-wrap" style="margin-top:8px"><table style="font-size:12.5px"><thead><tr><th>${isEff() ? 'Nº' : 'Transf.'}</th><th>${isEff() ? 'Vto.' : 'Fecha'}</th><th style="text-align:right">Importe</th>${invs.map(i => `<th style="text-align:right">Fra ${escapeHtml(i.number || '')}</th>`).join('')}</tr></thead><tbody>
+      ${sp.map((p, k) => `<tr style="cursor:default"><td class="mono">${escapeHtml(isEff() ? (p.effectNumber || '—') : String(k + 1))}</td><td class="mono">${fmtDate(isEff() ? p.dueDate : p.date)}</td><td class="num">${fmtMoney(p.amount)}</td>${invs.map(i => { const a = al[k].allocations.find(x => x.invoiceId === i.id); return `<td class="num">${a ? fmtMoney(a.amount) : ''}</td>`; }).join('')}</tr>`).join('')}
       <tr style="font-weight:700"><td colspan="2">Total</td><td class="num">${fmtMoney(tP)}</td>${invs.map(i => `<td class="num">${fmtMoney(al.reduce((s, r) => s + (r.allocations.find(x => x.invoiceId === i.id)?.amount || 0), 0))}</td>`).join('')}</tr>
       </tbody></table></div>` : '';
-    document.getElementById('grpSum').innerHTML = `<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px"><span>Facturas marcadas: <strong class="mono">${fmtMoney(tF)}</strong></span><span>Pagarés: <strong class="mono">${fmtMoney(tP)}</strong></span><span>Diferencia: <strong class="mono">${fmtMoney(dif)}</strong></span></div><div style="margin-top:6px;font-size:13px">${msg}</div>${table}`;
+    document.getElementById('grpSum').innerHTML = `<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px"><span>Facturas marcadas: <strong class="mono">${fmtMoney(tF)}</strong></span><span>Pago: <strong class="mono">${fmtMoney(tP)}</strong></span><span>Diferencia: <strong class="mono">${fmtMoney(dif)}</strong></span></div><div style="margin-top:6px;font-size:13px">${msg}</div>${table}`;
     document.getElementById('grpOk').disabled = !(invs.length && sp.length && dif <= 0.005);
   };
   const paint = () => {
     root.innerHTML = `<div class="modal-overlay" id="grpOv"><div class="modal" style="max-width:820px">
-      <h3>Pagarés agrupados · ${escapeHtml(c.name)}</h3>
-      <p class="field-hint">Para cuando el cliente manda varios pagarés que pagan varias facturas a la vez. Cada pagaré se guarda <strong>una sola vez, con su importe real</strong> (así sale en Control de efectos y en la remesa), y en cada factura queda apuntado lo que cubre.</p>
-      <h4 style="margin:10px 0 4px">1. Facturas que pagan</h4>
+      <h3>Pago agrupado · ${escapeHtml(party.name)}</h3>
+      <p class="field-hint">Para cuando ${isOut ? 'el cliente paga' : 'pagamos'} varias facturas a la vez con unos mismos pagarés, confirmings, cheques o una transferencia. Cada pago se guarda <strong>una sola vez, con su importe real</strong> (así sale en Control de efectos, en la remesa y en el banco), y en cada factura queda apuntado lo que cubre.</p>
+      <h4 style="margin:10px 0 4px">1. Facturas que se pagan</h4>
       ${cand.length ? `<div class="table-wrap" style="max-height:220px;overflow:auto"><table style="font-size:13px"><thead><tr><th class="checkcol"></th><th>Nº</th><th class="hide-m">Fecha</th><th class="hide-m" style="text-align:right">Importe</th><th style="text-align:right">Por cubrir</th></tr></thead><tbody>
-        ${cand.map(i => `<tr style="cursor:pointer" data-selinv="${i.id}"><td><input type="checkbox" data-chkinv="${i.id}" ${sel.has(i.id) ? 'checked' : ''}></td><td class="mono">${escapeHtml(i.number || '—')}</td><td class="mono hide-m">${fmtDate(i.date)}</td><td class="num hide-m">${fmtMoney(i.amount)}</td><td class="num">${fmtMoney(outUncovered(i))}</td></tr>`).join('')}
-      </tbody></table></div>` : '<div class="empty">Este cliente no tiene facturas pendientes de cubrir.</div>'}
-      <h4 style="margin:14px 0 4px">2. Pagarés recibidos</h4>
-      <div class="form-row" style="max-width:260px"><label>Tipo de efecto</label><select id="grpMethod">${EFFECT_METHODS.map(m => `<option ${m === method ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
+        ${cand.map(i => `<tr style="cursor:pointer" data-selinv="${i.id}"><td><input type="checkbox" data-chkinv="${i.id}" ${sel.has(i.id) ? 'checked' : ''}></td><td class="mono">${escapeHtml(i.number || '—')}</td><td class="mono hide-m">${fmtDate(i.date)}</td><td class="num hide-m">${fmtMoney(i.amount)}</td><td class="num">${fmtMoney(grpUncovered(i, isOut))}</td></tr>`).join('')}
+      </tbody></table></div>` : `<div class="empty">Este ${G.who} no tiene facturas pendientes de cubrir.</div>`}
+      <h4 style="margin:14px 0 4px">2. Cómo se ${isOut ? 'cobra' : 'paga'}</h4>
+      <div class="form-row" style="max-width:260px"><label>Forma de pago</label><select id="grpMethod">${GRP_METHODS.map(m => `<option ${m === method ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
+      ${isEff() ? '' : `<div class="field-hint" style="margin:-4px 0 8px">La transferencia se apunta ya como <strong>${isOut ? 'cobrada' : 'pagada'}</strong> en la fecha y el banco que pongas.</div>`}
       <div>${pags.map(pagRow).join('')}</div>
-      <button type="button" class="btn btn-sm" id="grpAddP" style="margin-top:6px">+ Añadir pagaré</button> <span class="field-hint">copia la emisión, el importe y el banco del anterior y suma 1 al número</span>
+      <button type="button" class="btn btn-sm" id="grpAddP" style="margin-top:6px">+ Añadir ${isEff() ? lbl().replace(/s$/, '') : 'transferencia'}</button> ${isEff() ? '<span class="field-hint">copia la emisión, el importe y el banco del anterior y suma 1 al número</span>' : ''}
       <h4 style="margin:14px 0 4px">3. Reparto</h4>
       <div id="grpSum"></div>
-      <div class="modal-actions"><button class="btn" id="grpCancel">Cancelar</button><button class="btn btn-primary" id="grpOk" disabled>Guardar pagarés</button></div>
+      <div class="modal-actions"><button class="btn" id="grpCancel">Cancelar</button><button class="btn btn-primary" id="grpOk" disabled>Guardar pago</button></div>
     </div></div>`;
     document.getElementById('grpOv').onclick = e => { if (e.target.id === 'grpOv') closeModal(); };
     document.getElementById('grpCancel').onclick = closeModal;
-    document.getElementById('grpMethod').onchange = e => { method = e.target.value; };
+    document.getElementById('grpMethod').onchange = e => { const was = isEff(); method = e.target.value; if (was !== isEff()) paint(); else summary(); };
     root.querySelectorAll('[data-chkinv]').forEach(ch => ch.onclick = e => e.stopPropagation());
     root.querySelectorAll('[data-chkinv]').forEach(ch => ch.onchange = () => { ch.checked ? sel.add(ch.dataset.chkinv) : sel.delete(ch.dataset.chkinv); summary(); });
     root.querySelectorAll('[data-selinv]').forEach(tr => tr.onclick = () => { const ch = tr.querySelector('[data-chkinv]'); ch.checked = !ch.checked; ch.onchange(); });
-    root.querySelectorAll('[data-pf]').forEach(inp => inp.oninput = () => { pags[+inp.dataset.ix][inp.dataset.pf] = inp.value; summary(); });
+    root.querySelectorAll('[data-pf]').forEach(inp => { const f = () => { pags[+inp.dataset.ix][inp.dataset.pf] = inp.value; summary(); }; inp.oninput = f; inp.onchange = f; });
     root.querySelectorAll('[data-delp]').forEach(b => b.onclick = () => { pags.splice(+b.dataset.delp, 1); paint(); });
-    document.getElementById('grpAddP').onclick = () => { const l = pags[pags.length - 1]; pags.push({ effectNumber: nextEffectNumber(l.effectNumber), emissionDate: l.emissionDate, dueDate: '', amount: l.amount, issuingBank: l.issuingBank }); paint(); };
+    document.getElementById('grpAddP').onclick = () => { const l = pags[pags.length - 1]; pags.push({ effectNumber: nextEffectNumber(l.effectNumber), emissionDate: l.emissionDate, dueDate: '', date: l.date, amount: isEff() ? l.amount : '', issuingBank: l.issuingBank, bank: l.bank, note: '' }); paint(); };
     document.getElementById('grpOk').onclick = save;
     summary();
   };
   const save = async () => {
-    const invs = selInvs(), sp = sortedPags();
-    const bad = sp.find(p => !isoOk(p.dueDate) || !isoOk(p.emissionDate));
-    if (bad) return showToast('Falta la fecha de emisión o de vencimiento de algún pagaré.');
-    if (pags.some(p => num(p.amount) <= 0 && (p.effectNumber || p.dueDate))) return showToast('Hay un pagaré sin importe.');
-    const al = grpAllocate(invs, sp);
-    if (al.some(r => r.sobra > 0.005 || !r.allocations.length)) return showToast('Los pagarés superan las facturas marcadas.');
+    const invs = selInvs(), sp = sortedPags(), eff = isEff();
+    if (eff && sp.some(p => !isoOk(p.dueDate) || !isoOk(p.emissionDate))) return showToast('Falta la fecha de emisión o de vencimiento de algún efecto.');
+    if (!eff && sp.some(p => !isoOk(p.date) || !p.bank)) return showToast('Falta la fecha o el banco de la transferencia.');
+    if (pags.some(p => num(p.amount) <= 0 && (p.effectNumber || p.dueDate || p.note))) return showToast('Hay un pago sin importe.');
+    const al = grpAllocate(invs, sp, isOut);
+    if (al.some(r => r.sobra > 0.005 || !r.allocations.length)) return showToast('El pago supera las facturas marcadas.');
     const gid = 'grp' + Date.now().toString(36);
     const btn = document.getElementById('grpOk'); btn.disabled = true; btn.textContent = 'Guardando…';
     try {
       for (let k = 0; k < sp.length; k++) {
         const p = sp[k];
-        await db.collection('invoiceOutPayments').add({
-          invoiceId: '', clientId, allocations: al[k].allocations, groupId: gid, groupIndex: k + 1,
-          amount: round2(num(p.amount)), date: p.emissionDate, emissionDate: p.emissionDate, dueDate: p.dueDate,
-          method, effectNumber: String(p.effectNumber || '').trim(), issuingBank: String(p.issuingBank || '').trim(),
-          collected: false, collectedDate: '', collectedBank: '', remesado: false, remittanceBank: '', negotiated: false,
-          note: `Pagarés agrupados: fras ${invs.map(i => i.number).join(', ')}`
-        });
+        const rec = { invoiceId: '', [G.party]: partyId, allocations: al[k].allocations, groupId: gid, groupIndex: k + 1, amount: round2(num(p.amount)), method,
+          note: `Pago agrupado: fras ${invs.map(i => i.number).join(', ')}${p.note ? ' · ' + String(p.note).trim() : ''}` };
+        if (eff) Object.assign(rec, { date: p.emissionDate, emissionDate: p.emissionDate, dueDate: p.dueDate, effectNumber: String(p.effectNumber || '').trim(), issuingBank: String(p.issuingBank || '').trim(), [G.done]: false, [G.dDate]: '', [G.dBank]: '' });
+        else Object.assign(rec, { date: p.date, dueDate: p.date, effectNumber: '', issuingBank: '', [G.done]: true, [G.dDate]: p.date, [G.dBank]: p.bank });
+        if (isOut) Object.assign(rec, { remesado: false, remittanceBank: '', negotiated: false });
+        await db.collection(G.payCol).add(rec);
       }
-      /* lo que ahora cubren los pagarés se descuenta de las líneas pendientes «sin recibir» de cada factura */
+      /* lo que ahora cubre el pago se descuenta de las líneas pendientes «sin recibir / sin emitir» de cada factura */
       for (const i of invs) {
         let cub = Math.round(al.reduce((s, r) => s + (r.allocations.find(x => x.invoiceId === i.id)?.amount || 0), 0) * 100);
-        for (const x of state.invoiceOutPayments.filter(p => p.invoiceId === i.id && !p.collected && !effectReceived(p))) {
+        for (const x of state[G.payCol].filter(p => p.invoiceId === i.id && !p[G.done] && !G.got(p))) {
           if (cub <= 0) break;
           const a = Math.round(num(x.amount) * 100), t = Math.min(a, cub); cub -= t;
-          if (a - t <= 0) await db.collection('invoiceOutPayments').doc(x.id).delete();
-          else await db.collection('invoiceOutPayments').doc(x.id).update({ amount: (a - t) / 100 });
+          if (a - t <= 0) await db.collection(G.payCol).doc(x.id).delete();
+          else await db.collection(G.payCol).doc(x.id).update({ amount: (a - t) / 100 });
         }
       }
-      showToast(`${sp.length} ${method.toLowerCase()}${sp.length > 1 ? 's' : ''} guardado${sp.length > 1 ? 's' : ''}`);
+      showToast(sp.length > 1 ? `${sp.length} pagos guardados` : 'Pago guardado');
       closeModal(); render();
-    } catch (e) { console.error(e); showToast('No se pudo guardar. Revisa en la ficha qué pagarés se han guardado.'); btn.disabled = false; btn.textContent = 'Guardar pagarés'; }
+    } catch (e) { console.error(e); showToast('No se pudo guardar. Revisa en la ficha qué pagos se han guardado.'); btn.disabled = false; btn.textContent = 'Guardar pago'; }
   };
   paint();
 }
@@ -2361,23 +2401,26 @@ function renderSupplierDetail(id) {
           </table></div>
         </div>
         <div class="card">
-          <div class="card-head"><h2>Facturas recibidas</h2><button class="btn btn-sm" id="addInv">+ Factura</button></div>
-          <div class="table-wrap"><table>
-            <thead><tr><th>Nº</th><th>Fecha</th><th>Obra</th><th>Vencimiento</th><th>Forma de pago</th><th>Importe</th><th>Estado</th><th></th></tr></thead>
+          <div class="card-head"><h2>Facturas recibidas</h2><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm" id="addGrpIn" title="Un mismo pago (confirming, pagaré o transferencia) que paga varias facturas">+ Pago agrupado</button><button class="btn btn-sm" id="addInv">+ Factura</button></div></div>
+          <div class="table-wrap"><table class="tight-m">
+            <thead><tr><th>Nº</th><th class="hide-m">Fecha</th><th class="hide-m">Obra</th><th class="hide-m">Vencimiento</th><th class="hide-m">Forma de pago</th><th>Importe</th><th>Estado</th><th></th></tr></thead>
             <tbody>
               ${invs.length===0?'<tr><td colspan="8" class="empty">Sin facturas registradas.</td></tr>':''}
               ${invs.map(i=>{
                 const st = invoiceInStatus(i);
                 const n = inLines(i).length;
                 const dm = linesDueMethod(inLines(i), 'paid');
-                return `<tr data-iid="${i.id}"><td class="mono">${escapeHtml(i.number||'—')}</td><td class="mono">${fmtDate(i.date)}</td><td class="muted">${escapeHtml(inWorkLabel(i))}</td><td class="mono">${dm.due}</td><td>${escapeHtml(dm.method)}</td><td class="num">${fmtMoney(i.amount)}</td><td><span class="pill ${st.cls}">${st.label}</span></td><td><button class="link-btn" data-pay="${i.id}" data-paycol="invoicesIn">Pagos${n>1?' ('+n+')':''}</button></td></tr>`;
+                return `<tr data-iid="${i.id}"><td class="mono">${escapeHtml(i.number||'—')}</td><td class="mono hide-m">${fmtDate(i.date)}</td><td class="muted hide-m">${escapeHtml(inWorkLabel(i))}</td><td class="mono hide-m">${dm.due}</td><td class="hide-m">${escapeHtml(dm.method)}</td><td class="num">${fmtMoney(i.amount)}</td><td><span class="pill ${st.cls}">${st.label}</span></td><td><button class="link-btn" data-pay="${i.id}" data-paycol="invoicesIn">Pagos${n>1?' ('+n+')':''}</button></td></tr>`;
               }).join('')}
             </tbody>
           </table></div>
         </div>
+        ${grpListHtml(id, false)}
       </div>
     </div>
   `;
+  document.getElementById('addGrpIn').onclick = () => openGroupedPayModal(id, false);
+  bindGrpDelete();
   document.getElementById('back').onclick = () => { currentDetail = {type:null,id:null}; render(); };
   document.getElementById('editS').onclick = () => openEntityModal('supplier', id);
   document.getElementById('delS').onclick = () => confirmDelete('suppliers', id, s.name, () => { currentDetail={type:null,id:null}; render(); });
@@ -3650,14 +3693,14 @@ function invoiceEffectsBox(type, id) {
   const st = l => isOut ? (l.collected ? `Cobrado ${fmtDate(l.collectedDate)}${l.negotiated ? ' (negociado)' : ''}` : l.remesado ? `Remesado ${fmtDate(l.remittanceDate)}${l.remittanceBank ? ' · ' + escapeHtml(l.remittanceBank) : ''}` : 'En cartera') : (l.paid ? `Pagado ${fmtDate(l.paidDate)}` : 'Pendiente');
   return `<div style="background:var(--info-bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px;font-size:13px">
     <div style="font-weight:700;margin-bottom:4px">${isOut ? 'Cobrada con' : 'Pagada con'}</div>
-    ${eff.map(l => `<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:space-between;padding:3px 0;border-top:1px dashed var(--border)"><span><strong>${escapeHtml(l.method)}</strong>${l.issuingBank ? ' · ' + escapeHtml(l.issuingBank) : ''}${l.effectNumber ? ' · nº ' + escapeHtml(l.effectNumber) : ''} · <strong>vence ${fmtDate(l.dueDate)}</strong>${l._grp ? ` <span class="muted">· parte de un pagaré de ${fmtMoney(l._grpTotal)} que paga varias facturas</span>` : ''}</span><span class="mono">${fmtMoney(l.amount)} · <span class="muted">${st(l)}</span></span></div>`).join('')}
+    ${eff.map(l => `<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:space-between;padding:3px 0;border-top:1px dashed var(--border)"><span><strong>${escapeHtml(l.method)}</strong>${l.issuingBank ? ' · ' + escapeHtml(l.issuingBank) : ''}${l.effectNumber ? ' · nº ' + escapeHtml(l.effectNumber) : ''} · <strong>vence ${fmtDate(l.dueDate)}</strong>${l._grp ? ` <span class="muted">· parte de un pago agrupado de ${fmtMoney(l._grpTotal)} que paga varias facturas</span>` : ''}</span><span class="mono">${fmtMoney(l.amount)} · <span class="muted">${st(l)}</span></span></div>`).join('')}
     ${isOut && pend.length && !eff.length ? '<div class="muted">Forma pactada con efecto, pero todavía no se ha recibido: anota abajo el banco emisor y el vencimiento del pagaré cuando llegue.</div>' : ''}
 
   </div>`;
 }
 /* Campos de «ya pagada / ya cobrada» de la factura: si está repartida en varios pagos se ocultan, porque mandan las líneas de pago */
 const PAY_FIELDS = ['paid', 'paidDate', 'paidBank', 'collected', 'collectedDate', 'collectedBank', 'negotiated'];
-function invoiceIsSplit(type, id) { return (type === 'invoiceOut' ? state.invoiceOutPayments : state.invoiceInPayments).some(p => p.invoiceId === id) || (type === 'invoiceOut' && grpPieces(id).length > 0); }
+function invoiceIsSplit(type, id) { return (type === 'invoiceOut' ? state.invoiceOutPayments : state.invoiceInPayments).some(p => p.invoiceId === id) || grpPieces(id, type === 'invoiceOut').length > 0; }
 /* Recuadro en la ficha de la factura: cuánto se ha pagado y botón para pagar o ver los pagos */
 function invoicePayBox(type, id) {
   const isOut = type === 'invoiceOut', inv = byId(state[isOut ? 'invoicesOut' : 'invoicesIn'], id); if (!inv) return '';
@@ -3727,7 +3770,7 @@ function renderPaymentsModal(invoiceId, col) {
   const payCol = isOut ? 'invoiceOutPayments' : 'invoiceInPayments';
   const lines = state[payCol].filter(p => p.invoiceId === invoiceId).sort((a, b) => (a[K.done] === b[K.done] ? ((a[K.dDate] || a.date || '') < (b[K.dDate] || b.date || '') ? -1 : 1) : a[K.done] ? -1 : 1));
   /* trozos de pagarés agrupados que tocan a esta factura: cuentan para los totales, pero no se editan aquí */
-  const pieces = isOut ? grpPieces(invoiceId) : [];
+  const pieces = grpPieces(invoiceId, isOut);
   const usingCustom = lines.length > 0 || pieces.length > 0;
   const view = usingCustom ? [...lines, ...pieces] : (isOut ? outLines(inv) : inLines(inv));
   const allL = [...lines, ...pieces];
@@ -3742,8 +3785,8 @@ function renderPaymentsModal(invoiceId, col) {
     <div class="modal-overlay" id="payOverlay">
       <div class="modal" style="max-width:640px">
         <h3>${isOut ? 'Cobros' : 'Pagos'} de la factura ${escapeHtml(inv.number || '(sin número)')}</h3>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">${kpi('Total factura', total)}${kpi(K.Past, done, 'color:var(--income)')}${grpPend > 0.005 ? kpi('En pagarés agrupados', grpPend) : ''}${kpi('Pendiente', Math.max(0, left), left > 0.005 ? 'color:var(--expense)' : '')}</div>
-        ${pieces.length ? `<div class="field-hint" style="margin-bottom:8px">Parte de esta factura está pagada con pagarés que pagan también otras facturas. Esos pagarés se cobran, remesan o quitan desde <strong>Control de efectos</strong> o desde la ficha del cliente («Pagarés agrupados»).</div>` : ''}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">${kpi('Total factura', total)}${kpi(K.Past, done, 'color:var(--income)')}${grpPend > 0.005 ? kpi(isOut ? 'En pagos agrupados (en cartera)' : 'En pagos agrupados (emitidos)', grpPend) : ''}${kpi('Pendiente', Math.max(0, left), left > 0.005 ? 'color:var(--expense)' : '')}</div>
+        ${pieces.length ? `<div class="field-hint" style="margin-bottom:8px">Parte de esta factura está en un <strong>pago agrupado</strong> (un mismo pagaré, confirming o transferencia que paga también otras facturas). Ese pago se marca, remesa o quita desde <strong>Control de efectos</strong> o desde la ficha del ${isOut ? 'cliente' : 'proveedor'} («Pagos agrupados»).</div>` : ''}
         ${done > total + 0.005 ? `<div style="background:var(--expense-bg, #fde8e6);color:var(--expense);border-radius:var(--radius);padding:8px 10px;margin-bottom:10px;font-size:13px"><strong>Hay ${fmtMoney(done - total)} ${K.past}s de más.</strong> Pulsa <em>Editar</em> en la línea que sobra para corregir el importe, o <em>Quitar</em> para borrarla.</div>` : ''}
         ${usingCustom && Math.abs(mismatch) > 0.005 && done <= total + 0.005 ? `<div style="background:var(--warn-bg, #fff4dc);border-radius:var(--radius);padding:8px 10px;margin-bottom:10px;font-size:13px">Las líneas suman ${fmtMoney(assigned)} y la factura ${fmtMoney(total)}. <button class="btn btn-sm" id="payFix">Cuadrar lo pendiente</button></div>` : ''}
         <div class="table-wrap"><table>
@@ -3752,8 +3795,8 @@ function renderPaymentsModal(invoiceId, col) {
             ${view.map(l => `<tr style="cursor:default">
               <td class="num">${fmtMoney(l.amount)}</td><td class="mono">${fmtDate(l.dueDate)}</td><td>${escapeHtml(l.method || '—')}${l.resto && !l[K.done] && EFFECT_METHODS.includes(l.method) ? ` <span class="muted" style="font-size:12px">(${isOut ? 'sin recibir' : 'sin emitir'})</span>` : ''}</td>
               <td class="muted">${escapeHtml(isOut ? (l.issuingBank || '') : (l.note || ''))}</td>
-              <td>${l[K.done] ? `<span class="pill pill-income">${K.Past} ${fmtDate(l[K.dDate])}</span>${bname(l[K.dBank]) ? ' <span class="muted">· ' + escapeHtml(bname(l[K.dBank])) + '</span>' : ''}` : l._grp ? `<span class="pill pill-neutral">${l.remesado ? 'Remesado' : 'En cartera'}</span>` : `<button class="btn btn-sm btn-primary" data-payline="${l.id || ''}">${isOut ? 'Cobrar' : 'Pagar'}</button>`}</td>
-              <td style="white-space:nowrap">${l._grp ? `<span class="muted" style="font-size:12px">Pagaré agrupado${l.effectNumber ? ' nº ' + escapeHtml(l.effectNumber) : ''} de ${fmtMoney(l._grpTotal)}</span>` : l.id ? `<button class="link-btn" data-editpay="${l.id}">Editar</button> · <button class="link-btn" data-delpay="${l.id}" style="color:var(--expense)">Quitar</button>` : (l[K.done] ? `<button class="link-btn" data-undoimpl="1">Desmarcar</button>` : '')}</td>
+              <td>${l[K.done] ? `<span class="pill pill-income">${K.Past} ${fmtDate(l[K.dDate])}</span>${bname(l[K.dBank]) ? ' <span class="muted">· ' + escapeHtml(bname(l[K.dBank])) + '</span>' : ''}` : l._grp ? `<span class="pill pill-neutral">${isOut ? (l.remesado ? 'Remesado' : 'En cartera') : 'Emitido'}</span>` : `<button class="btn btn-sm btn-primary" data-payline="${l.id || ''}">${isOut ? 'Cobrar' : 'Pagar'}</button>`}</td>
+              <td style="white-space:nowrap">${l._grp ? `<span class="muted" style="font-size:12px">${escapeHtml(l.method || 'Pago')} agrupado${l.effectNumber ? ' nº ' + escapeHtml(l.effectNumber) : ''} de ${fmtMoney(l._grpTotal)}</span>` : l.id ? `<button class="link-btn" data-editpay="${l.id}">Editar</button> · <button class="link-btn" data-delpay="${l.id}" style="color:var(--expense)">Quitar</button>` : (l[K.done] ? `<button class="link-btn" data-undoimpl="1">Desmarcar</button>` : '')}</td>
             </tr>`).join('')}
           </tbody>
         </table></div>
@@ -3868,7 +3911,7 @@ function openPayLineForm(invoiceId, col, payCol, existingId, suggestedAmount) {
     } else data.resto = false;
     if (isOut) { data.issuingBank = document.getElementById('lf_bank').value; data.remesado = draft.remesado || false; data.remittanceBank = draft.remittanceBank || ''; }
     else data.note = document.getElementById('lf_bank').value;
-    const others = [...state[payCol].filter(p => p.invoiceId === invoiceId && p.id !== existingId), ...(isOut ? grpPieces(invoiceId) : [])];
+    const others = [...state[payCol].filter(p => p.invoiceId === invoiceId && p.id !== existingId), ...grpPieces(invoiceId, isOut)];
     try {
       let ops = [];
       if (!others.length && !existingId && !(isOut ? inv.collected : inv.paid)) {
