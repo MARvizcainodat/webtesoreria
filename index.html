@@ -255,7 +255,7 @@
 
   /* ---------- defensa de formatos: fechas, importes y casillas que lleguen como texto ---------- */
   var DATE_F = ['date','dueDate','paidDate','collectedDate','nextDate','remittanceDate','emissionDate','issueDate','lastDate','offerDate'];
-  var NUM_F = ['amount','budget','paymentTermDays','installmentsRemaining','quantity','unitPrice','price','base','iva','ivaAmount','ivaRate','pieces','length','width','thickness','polishedFaces','drips','defaultThickness','unitCost'];
+  var NUM_F = ['amount','budget','paymentTermDays','smallLimit','smallTermDays','installmentsRemaining','quantity','unitPrice','price','base','iva','ivaAmount','ivaRate','pieces','length','width','thickness','polishedFaces','drips','defaultThickness','unitCost'];
   var BOOL_F = ['collected','paid','remesado','autoIvaCalc','received','archived','ivaExempt','main','negotiated'];
   var pad = function (n) { return (n < 10 ? '0' : '') + n; };
   var okDate = function (y, m, d) { var t = new Date(Date.UTC(y, m - 1, d)); return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d; };
@@ -2454,6 +2454,7 @@ function renderSupplierDetail(id) {
         <div class="field"><div class="k">Email</div><div class="v">${escapeHtml(s.email||'—')}</div></div>
         <div class="field"><div class="k">Forma de pago</div><div class="v"><span class="pill pill-neutral">${escapeHtml(s.paymentMethod||'—')}</span></div></div>
         <div class="field"><div class="k">Plazo de pago</div><div class="v">${num(s.paymentTermDays)>0?num(s.paymentTermDays)+' días':PROV_TERM+' días <span class="muted">(provisional, sin revisar)</span>'}</div></div>
+        ${num(s.smallLimit)>0?`<div class="field"><div class="k">Facturas de menos de ${fmtMoney(num(s.smallLimit))}</div><div class="v"><span class="pill pill-neutral">${escapeHtml(s.smallMethod||'Transferencia')}</span> ${num(s.smallTermDays)>0?num(s.smallTermDays)+' días':'—'}</div></div>`:''}
         ${s.notes?`<div class="field wide"><div class="k">Notas</div><div class="v">${escapeHtml(s.notes)}</div></div>`:''}
       </div>
       <div>
@@ -2641,13 +2642,20 @@ function openAllocPicker(workId) {
 // ---------- PROVISION ----------
 /* ---------- PREVISIÓN SEGÚN PLAZOS PACTADOS (Resumen) ---------- */
 const PROV_TERM = 120; /* plazo provisional para clientes y proveedores que no tienen plazo indicado */
+/* Plazo y forma de pago de un proveedor para una factura concreta.
+   Si el proveedor tiene «importe límite» y la factura (importe con IVA) es menor, se usan la forma y los días de las facturas pequeñas. */
+function supplierTerms(sup, invAmount) {
+  const lim = num(sup && sup.smallLimit), small = lim > 0 && Math.abs(num(invAmount)) < lim && num(sup.smallTermDays) > 0;
+  return small ? { method: sup.smallMethod || 'Transferencia', days: num(sup.smallTermDays), small: true }
+               : { method: (sup && sup.paymentMethod) || '', days: num(sup && sup.paymentTermDays), small: false };
+}
 function expectedDate(l, isOut) {
   if (isoOk(l.dueDate)) return { date: l.dueDate, prov: false };
   const inv = byId(isOut ? state.invoicesOut : state.invoicesIn, l.invoiceId);
   const base = isoOk(l.date) ? l.date : (inv && isoOk(inv.date) ? inv.date : '');
   if (!base) return { date: '', prov: true, none: true };
   const party = isOut ? byId(state.clients, l.clientId || (inv && inv.clientId)) : byId(state.suppliers, l.supplierId || (inv && inv.supplierId));
-  const term = num(party && party.paymentTermDays);
+  const term = isOut ? num(party && party.paymentTermDays) : supplierTerms(party, inv ? inv.amount : l.amount).days;
   if (term > 0) return { date: dayjs(base).add(term, 'day').format('YYYY-MM-DD'), prov: false };
   return { date: dayjs(base).add(PROV_TERM, 'day').format('YYYY-MM-DD'), prov: true };
 }
@@ -2930,7 +2938,7 @@ function provisionItems(months, endOverride) {
   /* Otros cobros por vencimiento: lo que falta por cobrar sin efecto recibido (transferencias, restos de pagarés parciales…), en su vencimiento previsto */
   porCobrarLines().forEach(l => { const m = l._resto ? 'Resto sin efecto' : (l.method || 'Transferencia'); items.push({ date: l.due || todayISO(), kind: 'in', cat: 'derecho', name: cliName(l.clientId), invNum: l.invoiceNumber || '', method: m, prov: !!l.dueProv, label: `${cliName(l.clientId)} · ${l.invoiceNumber || ''} (${m})`, amount: Number(l.amount || 0), bank: '', pay: l._resto ? { t: 'resto', invoiceId: l.invoiceId } : { t: 'out', id: l.id || null, invoiceId: l.invoiceId } }); });
   /* Proveedores: cada pago en su vencimiento (o en el plazo pactado con el proveedor), no todo hoy. Con efecto emitido = «Pago de efectos» */
-  allInLines().filter(l => !l.paid && !linkedInvoice(l.invoiceId)).forEach(l => { const e = expectedDate(l, false), ef = effectIssued(l), m = ef || !l._implicit ? l.method : (byId(state.invoicesIn, l.invoiceId)?.paymentMethod || byId(state.suppliers, l.supplierId)?.paymentMethod || 'Transferencia');
+  allInLines().filter(l => !l.paid && !linkedInvoice(l.invoiceId)).forEach(l => { const e = expectedDate(l, false), ef = effectIssued(l), m = ef || !l._implicit ? l.method : (byId(state.invoicesIn, l.invoiceId)?.paymentMethod || supplierTerms(byId(state.suppliers, l.supplierId), byId(state.invoicesIn, l.invoiceId)?.amount).method || 'Transferencia');
     items.push({ date: e.date || todayISO(), kind: 'out', cat: ef ? 'efecto' : 'proveedor', method: m, issuingBank: l.issuingBank || '', name: proName(l.supplierId), invNum: l.invoiceNumber || '', prov: !!e.prov, label: `${proName(l.supplierId)} · ${l.invoiceNumber || ''} (${m})`, amount: Number(l.amount || 0), bank: l.method === 'Efectivo' ? CASH : (ef ? '' : mainBankId()), pay: { t: 'in', id: l.id || null, invoiceId: l.invoiceId } }); });
   state.oneOffExpenses.filter(x => !x.paid).forEach(x => items.push({ date: x.dueDate || todayISO(), kind: 'out', cat: 'puntual', name: x.concept, method: '', label: x.concept, amount: Number(x.amount || 0), bank: defBank(x.bank), pay: { t: 'oo', id: x.id } }));
   const ms0 = state.fixedExpensePayments.map(p => p.month).filter(Boolean).sort()[0];
@@ -3348,6 +3356,9 @@ const ENTITY_CONFIG = {
       { key:'address', label:'Dirección postal (para sobres y cartas): calle, CP y población', type:'textarea' },
       { key:'paymentMethod', label:'Forma de pago', type:'select', options: PAYMENT_METHODS },
       { key:'paymentTermDays', label:'Plazo de pago (días)', type:'number' },
+      { key:'smallLimit', label:'Facturas pequeñas: importe límite (€, con IVA). Vacío = no hay regla', type:'number' },
+      { key:'smallMethod', label:'Facturas pequeñas: forma de pago', type:'select', options: () => [{ value: '', label: '— Sin indicar —' }, ...PAYMENT_METHODS.map(m => ({ value: m, label: m }))], showIf: d => num(d.smallLimit) > 0 },
+      { key:'smallTermDays', label:'Facturas pequeñas: plazo de pago (días)', type:'number', showIf: d => num(d.smallLimit) > 0 },
       { key:'notes', label:'Notas', type:'textarea' },
     ]
   },
@@ -3476,7 +3487,9 @@ const ENTITY_CONFIG = {
         recomputeDueDateSupplier(draft, supplier);
       },
       date: (draft) => { const supplier = byId(state.suppliers, draft.supplierId); recomputeDueDateSupplier(draft, supplier); },
+      amount: (draft, isNew) => { if (!isNew) return; const supplier = byId(state.suppliers, draft.supplierId); recomputeDueDateSupplier(draft, supplier); },
       dueDate: (draft) => { draft._dueDateAuto = false; },
+      paymentMethod: (draft) => { draft._methodAuto = false; },
     }
   },
   bankAccount: {
@@ -3557,9 +3570,12 @@ function recomputeDueDate(draft, client) {
   }
 }
 function recomputeDueDateSupplier(draft, supplier) {
+  if (!supplier) return;
+  const t = supplierTerms(supplier, draft.amount);
+  if (draft._methodAuto !== false && t.method) { draft.paymentMethod = t.method; draft._methodAuto = true; }
   if (draft._dueDateAuto === false) return;
-  if (supplier?.paymentTermDays && draft.date) {
-    draft.dueDate = dayjs(draft.date).add(Number(supplier.paymentTermDays), 'day').format('YYYY-MM-DD');
+  if (t.days > 0 && draft.date) {
+    draft.dueDate = dayjs(draft.date).add(t.days, 'day').format('YYYY-MM-DD');
     draft._dueDateAuto = true;
   }
 }
