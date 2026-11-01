@@ -503,7 +503,8 @@ function linkIndex() {
   const byExp = {}, inv2exp = {}, bySup = {}, linesByInv = {};
   state.fixedExpenses.filter(e => e.supplierId).forEach(e => (bySup[e.supplierId] = bySup[e.supplierId] || []).push(e));
   state.invoicesIn.forEach(inv => inLines(inv).forEach(l => (linesByInv[inv.id] = linesByInv[inv.id] || []).push({ ...l, supplierId: inv.supplierId, invoiceNumber: inv.number, invoiceId: inv.id })));
-  const chargeMonth = inv => { const d = (linesByInv[inv.id] || []).map(l => l.dueDate).filter(isoOk).sort()[0] || (isoOk(inv.dueDate) ? inv.dueDate : '') || inv.date || ''; return String(d).slice(0, 7); };
+  /* mes del cargo: si ya está pagada, el mes en que se pagó (el agua de octubre con vencimiento 2/11 se pagó el 13/10: es de octubre); si no, el vencimiento */
+  const chargeMonth = inv => { const ls = linesByInv[inv.id] || [], pd = ls.filter(l => l.paid).map(l => l.paidDate).filter(isoOk).sort()[0] || (inv.paid && isoOk(inv.paidDate) ? inv.paidDate : ''); const d = pd || ls.map(l => l.dueDate).filter(isoOk).sort()[0] || (isoOk(inv.dueDate) ? inv.dueDate : '') || inv.date || ''; return String(d).slice(0, 7); };
   const put = (e, inv, m) => { inv2exp[inv.id] = e.id; ((byExp[e.id] = byExp[e.id] || {})[m] = byExp[e.id][m] || []).push(...(linesByInv[inv.id] || [])); };
   const groups = {};
   state.invoicesIn.forEach(inv => {
@@ -532,11 +533,13 @@ const linkedLines = (e, m) => e && e.supplierId ? ((linkIndex().byExp[e.id] || {
 const invoicePaidFor = (e, m) => linkedLines(e, m).some(l => l.paid);
 const FREQUENCIES = [
   { id: 'mensual', label: 'Mensual' },
+  { id: 'bimestral', label: 'Bimestral (cada 2 meses)' },
   { id: 'trimestral', label: 'Trimestral' },
+  { id: 'semestral', label: 'Semestral (cada 6 meses)' },
   { id: 'anual', label: 'Anual' },
-  { id: 'quincenal', label: 'Quincenal' },
-  { id: 'semanal', label: 'Semanal' },
 ];
+/* meses entre un cargo y el siguiente (quincenal y semanal ya no se ofrecen, pero se siguen entendiendo si algún gasto los tiene) */
+const FREQ_STEP = { mensual: 1, quincenal: 1, semanal: 1, bimestral: 2, trimestral: 3, semestral: 6, anual: 12 };
 const WORK_STATUSES = ['Presupuestada', 'Contratada', 'Finalizada'];
 
 let db = null;
@@ -807,12 +810,11 @@ function expenseOccursInMonth(exp, mKey) {
   if (target.isBefore(anchor, 'month')) return false;
   const diff = target.diff(anchor, 'month');
   let occurs = false;
-  if (['mensual','quincenal','semanal'].includes(exp.frequency)) occurs = diff >= 0;
-  else if (exp.frequency === 'trimestral') occurs = diff >= 0 && diff % 3 === 0;
-  else if (exp.frequency === 'anual') occurs = diff >= 0 && diff % 12 === 0;
+  const step = FREQ_STEP[exp.frequency] || 1;
+  occurs = diff >= 0 && diff % step === 0;
   if (occurs && exp.lastDate && dayjs(exp.lastDate).isValid() && target.isAfter(dayjs(exp.lastDate), 'month')) occurs = false;
   if (occurs && exp.category === 'prestamo' && !exp.lastDate && exp.installmentsRemaining != null && exp.installmentsRemaining !== '') {
-    const occurrenceIndex = exp.frequency !== 'trimestral' && exp.frequency !== 'anual' ? diff : exp.frequency === 'trimestral' ? diff / 3 : diff / 12;
+    const occurrenceIndex = diff / (FREQ_STEP[exp.frequency] || 1);
     if (occurrenceIndex >= Number(exp.installmentsRemaining)) occurs = false;
   }
   return occurs;
@@ -831,6 +833,17 @@ function expenseMonthAmount(e, m) {
     return base * n;
   }
   return base;
+}
+/* Próximo vencimiento que se ve en la lista: el primer mes, desde el actual, en que toca y aún no está pagado.
+   La fecha guardada en el gasto solo marca el día del mes y el mes de arranque; el estado de un mes no pasa al siguiente. */
+function nextDueOf(e) {
+  let m = dayjs().format('YYYY-MM');
+  for (let i = 0; i < 36; i++) {
+    const c = expenseMonthAmount(e, m);
+    if (c > 0.005 && c - expPaid(e.id, m) > 0.005) return expenseDayIn(e, m);
+    m = dayjs(m + '-01').add(1, 'month').format('YYYY-MM');
+  }
+  return e.nextDate || '';
 }
 function expPaid(id, m) {
   const e = byId(state.fixedExpenses, id);
@@ -1790,7 +1803,7 @@ function clientPricesHtml(clientId) {
    Cada pago se guarda UNA vez con su importe real y su reparto (allocations) entre facturas.
    · Pagaré / confirming / cheque: queda en cartera (clientes) o emitido (proveedores) y sale en Control de efectos.
    · Transferencia: se apunta ya cobrada / pagada, con su fecha y banco; sale en Bancos como un solo movimiento. */
-const GRP_METHODS = [...EFFECT_METHODS, 'Transferencia'];
+const GRP_METHODS = [...EFFECT_METHODS, 'Transferencia', 'Tarjeta']; /* transferencia y tarjeta se guardan ya pagadas */
 function grpCfg(isOut) {
   return isOut
     ? { payCol: 'invoiceOutPayments', invCol: 'invoicesOut', party: 'clientId', done: 'collected', dDate: 'collectedDate', dBank: 'collectedBank', got: effectReceived, Done: 'Cobrado', who: 'cliente', verb: 'cobro' }
@@ -1807,7 +1820,7 @@ function grpListHtml(partyId, isOut = true) {
     <div class="card-head"><h2>Pagos agrupados</h2></div>
     <div class="table-wrap"><table class="tight-m">
       <thead><tr><th>Forma · nº</th><th class="hide-m">Emisión / fecha</th><th>Vto.</th><th style="text-align:right">Importe</th><th class="hide-m">Facturas que paga</th><th class="hide-m">Estado</th><th></th></tr></thead>
-      <tbody>${ps.map(p => `<tr style="cursor:default"><td class="mono"><span class="hide-m">${escapeHtml(p.method || 'Pagaré')} </span>${p.effectNumber ? escapeHtml(p.effectNumber) : (EFFECT_METHODS.includes(p.method) ? '—' : '<span class="muted">transf.</span>')}</td><td class="mono hide-m">${fmtDate(p.emissionDate || p.date)}</td><td class="mono">${fmtDate(p.dueDate)}</td><td class="num">${fmtMoney(p.amount)}</td><td class="mono hide-m" style="font-size:12px">${rep(p)}</td><td class="hide-m">${st(p)}</td><td><button class="link-btn" data-delgrp="${p.id}" data-grpout="${isOut ? 1 : 0}" style="color:var(--expense)">Quitar</button></td></tr>`).join('')}</tbody>
+      <tbody>${ps.map(p => `<tr style="cursor:default"><td class="mono"><span class="hide-m">${escapeHtml(p.method || 'Pagaré')} </span>${p.effectNumber ? escapeHtml(p.effectNumber) : (EFFECT_METHODS.includes(p.method) ? '—' : `<span class="muted">${p.method === 'Tarjeta' ? 'tarjeta' : 'transf.'}</span>`)}</td><td class="mono hide-m">${fmtDate(p.emissionDate || p.date)}</td><td class="mono">${fmtDate(p.dueDate)}</td><td class="num">${fmtMoney(p.amount)}</td><td class="mono hide-m" style="font-size:12px">${rep(p)}</td><td class="hide-m">${st(p)}</td><td><button class="link-btn" data-delgrp="${p.id}" data-grpout="${isOut ? 1 : 0}" style="color:var(--expense)">Quitar</button></td></tr>`).join('')}</tbody>
     </table></div></div>`;
 }
 /* Al pulsar «Quitar» en la tabla de pagos agrupados de una ficha */
@@ -1852,6 +1865,7 @@ function openGroupedPayModal(partyId, isOut = true) {
   const sel = new Set();
   let method = GRP_METHODS.includes(party.paymentMethod) ? party.paymentMethod : (isOut ? 'Pagaré' : 'Transferencia');
   const isEff = () => EFFECT_METHODS.includes(method);
+  const noun = () => method === 'Tarjeta' ? 'pago con tarjeta' : 'transferencia';
   const pags = [{ effectNumber: '', emissionDate: '', dueDate: '', date: todayISO(), amount: '', issuingBank: '', bank: mainBankId(), note: '' }];
   const root = document.getElementById('modalRoot');
   const selInvs = () => cand.filter(i => sel.has(i.id));
@@ -1872,18 +1886,18 @@ function openGroupedPayModal(partyId, isOut = true) {
       <div><label>${isOut ? 'Entró en (banco)' : 'Salió de (banco)'}</label>${bankSel(p, ix, 'bank')}</div>
       <div><label>Concepto / referencia</label><input data-pf="note" data-ix="${ix}" value="${escapeHtml(p.note)}" placeholder="opcional"></div>`}
       ${pags.length > 1 ? `<button type="button" class="link-btn" data-delp="${ix}" style="color:var(--expense);flex:0 0 auto;padding-bottom:6px">Quitar</button>` : ''}</div>`;
-  const lbl = () => isEff() ? (method === 'Confirming' ? 'confirmings' : method === 'Cheque' ? 'cheques' : 'pagarés') : 'transferencias';
+  const lbl = () => isEff() ? (method === 'Confirming' ? 'confirmings' : method === 'Cheque' ? 'cheques' : 'pagarés') : (method === 'Tarjeta' ? 'pagos con tarjeta' : 'transferencias');
   const summary = () => {
     const invs = selInvs(), sp = sortedPags();
     const tF = round2(invs.reduce((s, i) => s + grpUncovered(i, isOut), 0)), tP = round2(sp.reduce((s, p) => s + num(p.amount), 0)), dif = round2(tP - tF);
     const al = grpAllocate(invs, sp, isOut);
     let msg = '';
     if (!invs.length) msg = '<span class="muted">Marca las facturas que se pagan.</span>';
-    else if (!sp.length) msg = `<span class="muted">Escribe ${isEff() ? 'los ' + lbl() : 'la transferencia'}.</span>`;
+    else if (!sp.length) msg = `<span class="muted">Escribe ${isEff() ? 'los ' + lbl() : 'el ' + noun()}.</span>`;
     else if (dif > 0.005) msg = `<span style="color:var(--expense);font-weight:600">El pago suma ${fmtMoney(dif)} más que las facturas marcadas: revisa los importes o marca otra factura.</span>`;
     else if (dif < -0.005) msg = `<span style="color:var(--warn);font-weight:600">El pago suma ${fmtMoney(-dif)} menos que las facturas: esa cantidad quedará pendiente en la última factura.</span>`;
     else msg = '<span style="color:var(--income);font-weight:600">Cuadra: el pago cubre justo las facturas marcadas.</span>';
-    const table = invs.length && sp.length ? `<div class="table-wrap" style="margin-top:8px"><table style="font-size:12.5px"><thead><tr><th>${isEff() ? 'Nº' : 'Transf.'}</th><th>${isEff() ? 'Vto.' : 'Fecha'}</th><th style="text-align:right">Importe</th>${invs.map(i => `<th style="text-align:right">Fra ${escapeHtml(i.number || '')}</th>`).join('')}</tr></thead><tbody>
+    const table = invs.length && sp.length ? `<div class="table-wrap" style="margin-top:8px"><table style="font-size:12.5px"><thead><tr><th>${isEff() ? 'Nº' : (method === 'Tarjeta' ? 'Tarjeta' : 'Transf.')}</th><th>${isEff() ? 'Vto.' : 'Fecha'}</th><th style="text-align:right">Importe</th>${invs.map(i => `<th style="text-align:right">Fra ${escapeHtml(i.number || '')}</th>`).join('')}</tr></thead><tbody>
       ${sp.map((p, k) => `<tr style="cursor:default"><td class="mono">${escapeHtml(isEff() ? (p.effectNumber || '—') : String(k + 1))}</td><td class="mono">${fmtDate(isEff() ? p.dueDate : p.date)}</td><td class="num">${fmtMoney(p.amount)}</td>${invs.map(i => { const a = al[k].allocations.find(x => x.invoiceId === i.id); return `<td class="num">${a ? fmtMoney(a.amount) : ''}</td>`; }).join('')}</tr>`).join('')}
       <tr style="font-weight:700"><td colspan="2">Total</td><td class="num">${fmtMoney(tP)}</td>${invs.map(i => `<td class="num">${fmtMoney(al.reduce((s, r) => s + (r.allocations.find(x => x.invoiceId === i.id)?.amount || 0), 0))}</td>`).join('')}</tr>
       </tbody></table></div>` : '';
@@ -1900,16 +1914,16 @@ function openGroupedPayModal(partyId, isOut = true) {
       </tbody></table></div>` : `<div class="empty">Este ${G.who} no tiene facturas pendientes de cubrir.</div>`}
       <h4 style="margin:14px 0 4px">2. Cómo se ${isOut ? 'cobra' : 'paga'}</h4>
       <div class="form-row" style="max-width:260px"><label>Forma de pago</label><select id="grpMethod">${GRP_METHODS.map(m => `<option ${m === method ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
-      ${isEff() ? '' : `<div class="field-hint" style="margin:-4px 0 8px">La transferencia se apunta ya como <strong>${isOut ? 'cobrada' : 'pagada'}</strong> en la fecha y el banco que pongas.</div>`}
+      ${isEff() ? '' : `<div class="field-hint" style="margin:-4px 0 8px">${method === 'Tarjeta' ? 'El pago con tarjeta' : 'La transferencia'} se apunta ya como <strong>${isOut ? 'cobrada' : 'pagada'}</strong> en la fecha y el banco que pongas.</div>`}
       <div>${pags.map(pagRow).join('')}</div>
-      <button type="button" class="btn btn-sm" id="grpAddP" style="margin-top:6px">+ Añadir ${isEff() ? lbl().replace(/s$/, '') : 'transferencia'}</button> ${isEff() ? '<span class="field-hint">copia la emisión, el importe y el banco del anterior y suma 1 al número</span>' : ''}
+      <button type="button" class="btn btn-sm" id="grpAddP" style="margin-top:6px">+ Añadir ${isEff() ? lbl().replace(/s$/, '') : noun()}</button> ${isEff() ? '<span class="field-hint">copia la emisión, el importe y el banco del anterior y suma 1 al número</span>' : ''}
       <h4 style="margin:14px 0 4px">3. Reparto</h4>
       <div id="grpSum"></div>
       <div class="modal-actions"><button class="btn" id="grpCancel">Cancelar</button><button class="btn btn-primary" id="grpOk" disabled>Guardar pago</button></div>
     </div></div>`;
     document.getElementById('grpOv').onclick = e => { if (e.target.id === 'grpOv') closeModal(); };
     document.getElementById('grpCancel').onclick = closeModal;
-    document.getElementById('grpMethod').onchange = e => { const was = isEff(); method = e.target.value; if (was !== isEff()) paint(); else summary(); };
+    document.getElementById('grpMethod').onchange = e => { method = e.target.value; paint(); };
     root.querySelectorAll('[data-chkinv]').forEach(ch => ch.onclick = e => e.stopPropagation());
     root.querySelectorAll('[data-chkinv]').forEach(ch => ch.onchange = () => { ch.checked ? sel.add(ch.dataset.chkinv) : sel.delete(ch.dataset.chkinv); summary(); });
     root.querySelectorAll('[data-selinv]').forEach(tr => tr.onclick = () => { const ch = tr.querySelector('[data-chkinv]'); ch.checked = !ch.checked; ch.onchange(); });
@@ -2098,7 +2112,7 @@ function renderBanks() {
               <td><span class="pill pill-neutral">${EXPENSE_CATEGORIES.find(c => c.id === e.category)?.label || e.category}</span></td>
               <td class="num">${e.autoIvaCalc ? 'Automático' : hasPlan(e) ? fmtMoney(e.installments.reduce((s, p) => s + instTotal(p), 0)) + ' <span class="muted">en plazos</span>' : fmtMoney(e.amount)}</td>
               <td class="muted">${FREQUENCIES.find(f => f.id === e.frequency)?.label || e.frequency}</td>
-              <td class="mono">${e.category === 'impuesto' && e.autoIvaCalc ? (x => `${fmtDate(x.due.format('YYYY-MM-DD'))} <span class="muted">(${x.label}${x.closed && x.due.isBefore(dayjs(), 'day') ? ', vencido' : ''})</span>`)(nextIvaDue()) : fmtDate(e.nextDate)}</td>
+              <td class="mono">${e.category === 'impuesto' && e.autoIvaCalc ? (x => `${fmtDate(x.due.format('YYYY-MM-DD'))} <span class="muted">(${x.label}${x.closed && x.due.isBefore(dayjs(), 'day') ? ', vencido' : ''})</span>`)(nextIvaDue()) : fmtDate(nextDueOf(e))}</td>
               <td class="muted">${escapeHtml(bname(defBank(e.bank)))}</td>
               <td class="muted">${escapeHtml(loanInfo(e))}</td></tr>`).join('')}
         </tbody></table></div></div>`;
@@ -3608,8 +3622,15 @@ function bindAllocations(root, rerender) {
 /* Precio de compra desde la tarifa de proveedores: primero los que encajan con la partida */
 function tariffPickHtml(d) {
   const hintIds = new Set(priceHints(d).map(p => p.id));
-  const opts = state.priceListItems.filter(p => !p.clientId).filter(p => !num(d.thickness) || !num(p.thickness) || num(p.thickness) === num(d.thickness))
-    .sort((a, b) => (hintIds.has(b.id) - hintIds.has(a.id)) || ((b.offerDate || '') < (a.offerDate || '') ? -1 : 1));
+  /* Solo se ofrecen los precios que se parecen a la partida: comparten alguna palabra (granito, angola, alféizar…).
+     Cuantas más palabras en común, más arriba. Si no se parece ninguno, se avisa en vez de enseñar toda la tarifa. */
+  const STOP = new Set(['de','del','la','el','los','las','con','sin','por','para','y','en','cm','mm','ml','m2','und','pza','ud']);
+  const words = t => stripAcc(t).split(/[^a-z0-9ñ]+/).filter(w => w.length >= 3 && !STOP.has(w) && !/^\d+$/.test(w));
+  const want = new Set(words(`${d.material || ''} ${d.finish || ''}`));
+  const score = p => { const ws = new Set(words(`${p.material || ''} ${p.finish || ''}`)); let n = 0; want.forEach(w => { if (ws.has(w)) n++; }); return n + (hintIds.has(p.id) ? 0.5 : 0); };
+  const base = state.priceListItems.filter(p => !p.clientId).filter(p => !num(d.thickness) || !num(p.thickness) || num(p.thickness) === num(d.thickness));
+  const opts = base.map(p => ({ p, sc: score(p) })).filter(x => x.sc >= 1).sort((a, b) => (b.sc - a.sc) || ((b.p.offerDate || '') < (a.p.offerDate || '') ? -1 : 1)).map(x => x.p);
+  if (state.priceListItems.some(p => !p.clientId) && !opts.length) return `<div class="field-hint">En la tarifa de proveedores no hay ningún precio que se parezca a «${escapeHtml(d.material || '')}». Añádelo en la ficha del proveedor («Tabla de precios») o escribe el coste a mano.</div>`;
   if (!state.priceListItems.length) return '<div class="field-hint">No hay tarifas de proveedor: añádelas en la ficha del proveedor («Tabla de precios») para poder elegir aquí el precio de compra.</div>';
   return `<div class="form-row"><label>Tomar el precio de compra de la tarifa de un proveedor${num(d.thickness) ? ` (grosor ${fmtQty(d.thickness)} cm)` : ''}</label>
     <select id="tariffPick"><option value="">— Elige un precio de la tarifa —</option>${opts.map(p => `<option value="${p.id}">${hintIds.has(p.id) ? '★ ' : ''}${escapeHtml(p.material)}${p.finish ? ' · ' + escapeHtml(p.finish) : ''}${num(p.thickness) ? ' · ' + fmtQty(p.thickness) + ' cm' : ''} — ${fmtMoney(p.price)}/${unitLabel(p.unit)} — ${escapeHtml(byId(state.suppliers, p.supplierId)?.name || '—')}${p.offerDate ? ' · ' + fmtDate(p.offerDate) : ''}</option>`).join('')}</select>
