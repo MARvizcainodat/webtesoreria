@@ -615,12 +615,23 @@ function outLines(inv) {
   if (!custom.length) return [{ id:null, invoiceId:inv.id, amount:Number(inv.amount||0), date:inv.date, dueDate:inv.dueDate, method:(inv.collected && inv.collectedBank === 'cash') ? 'Efectivo' : inv.paymentMethod, issuingBank:inv.issuingBank||'', remesado:!!inv.remesado, remittanceBank:inv.remittanceBank||'', remittanceDate:inv.remittanceDate||'', remittanceId:inv.remittanceId||'', remittanceBankId:inv.remittanceBankId||'', collected:!!inv.collected, collectedDate:inv.collectedDate||'', collectedBank:inv.collectedBank||'', negotiated:!!inv.negotiated, emissionDate:inv.emissionDate||'', effectNumber:inv.effectNumber||'', _implicit:true }];
   return custom;
 }
+/* Vencimiento NUESTRO de una factura de proveedor sin efecto emitido: fecha de factura + nuestro plazo real con ese proveedor
+   (sacado del diario de A3: emisión → pago en banco), no el vencimiento que pone el proveedor en su factura.
+   Facturas pequeñas: si el proveedor tiene «menos de X € → transferencia a N días», se aplica ese plazo y esa forma. */
+function ourInDue(inv) {
+  const s = byId(state.suppliers, inv.supplierId), base = isoOk(inv.date) ? inv.date : '';
+  if (!base) return { dueDate: inv.dueDate || '', method: inv.paymentMethod || '' };
+  const small = s && num(s.smallLimit) > 0 && num(s.smallTermDays) > 0 && Math.abs(num(inv.amount)) < num(s.smallLimit);
+  const days = small ? num(s.smallTermDays) : num(s && s.paymentTermDays);
+  if (!(days > 0)) return { dueDate: inv.dueDate || '', method: inv.paymentMethod || '' };
+  return { dueDate: dayjs(base).add(days, 'day').format('YYYY-MM-DD'), method: small ? (s.smallMethod || 'Transferencia') : (inv.paymentMethod || s.paymentMethod || '') };
+}
 function inLines(inv) {
   const pieces = grpPieces(inv.id, false);
   const custom = [...state.invoiceInPayments.filter(p => p.invoiceId === inv.id), ...pieces];
   /* si los pagos agrupados no cubren toda la factura, lo que falta sale como resto pendiente */
-  if (pieces.length) { const resto = round2(num(inv.amount) - custom.reduce((s, l) => s + num(l.amount), 0)); if (resto > 0.005) custom.push({ id:null, invoiceId:inv.id, amount:resto, date:inv.date, dueDate:inv.dueDate, method:inv.paymentMethod || 'Transferencia', note:'', paid:false, paidDate:'', paidBank:'', _implicit:true, _resto:true }); }
-  if (!custom.length) return [{ id:null, invoiceId:inv.id, amount:Number(inv.amount||0), date:inv.date, dueDate:inv.dueDate, method:(inv.paid && inv.paidBank === 'cash') ? 'Efectivo' : (inv.paymentMethod||'Transferencia'), note:inv.note||'', paid:!!inv.paid, paidDate:inv.paidDate||'', paidBank:inv.paidBank||'', issuingBank:inv.issuingBank||'', emissionDate:inv.emissionDate||'', _implicit:true }];
+  if (pieces.length) { const resto = round2(num(inv.amount) - custom.reduce((s, l) => s + num(l.amount), 0)); if (resto > 0.005) custom.push({ id:null, invoiceId:inv.id, amount:resto, date:inv.date, dueDate:ourInDue(inv).dueDate, method:inv.paymentMethod || 'Transferencia', note:'', paid:false, paidDate:'', paidBank:'', _implicit:true, _resto:true }); }
+  if (!custom.length) { const od = ourInDue(inv); return [{ id:null, invoiceId:inv.id, amount:Number(inv.amount||0), date:inv.date, dueDate:od.dueDate, method:(inv.paid && inv.paidBank === 'cash') ? 'Efectivo' : (od.method||'Transferencia'), note:inv.note||'', paid:!!inv.paid, paidDate:inv.paidDate||'', paidBank:inv.paidBank||'', issuingBank:inv.issuingBank||'', emissionDate:inv.emissionDate||'', _implicit:true }]; }
   return custom;
 }
 function outPendingAmount(inv) { return outLines(inv).filter(l=>!l.collected).reduce((s,l)=>s+Number(l.amount||0),0); }
