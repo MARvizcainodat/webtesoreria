@@ -1599,12 +1599,12 @@ function renderDashboard() {
   allOutLines().filter(l=>!l.collected).forEach(l => {
     if (!isoOk(l.dueDate)) { sinVencAv.c++; return; }
     const d = daysUntil(l.dueDate);
-    if (d <= 15) alerts.push({ kind: d<0?'expense':'warn', days: d, overdue: d<0, text: `${byId(state.clients,l.clientId)?.name || 'Cliente'} · Fra. ${l.invoiceNumber||''}`, sub: d<0?`Vencida hace ${-d} días`:(d===0?'Vence hoy':`Vence en ${d} días`), amt: l.amount, type:'in' });
+    if (d <= 15) { const w = alertWords(l, true, d); alerts.push({ kind: d<0?'expense':'warn', days: d, overdue: d<0, text: `${byId(state.clients,l.clientId)?.name || 'Cliente'} · ${w.text}`, sub: w.sub, amt: l.amount, type:'in' }); }
   });
   allInLines().filter(l=>!l.paid).forEach(l => {
     if (!isoOk(l.dueDate)) { sinVencAv.p++; return; }
     const d = daysUntil(l.dueDate);
-    if (d <= 15) alerts.push({ kind: d<0?'expense':'warn', days: d, overdue: d<0, text: `${byId(state.suppliers,l.supplierId)?.name || 'Proveedor'} · Fra. ${l.invoiceNumber||''}`, sub: d<0?`Vencida hace ${-d} días`:(d===0?'Vence hoy':`Vence en ${d} días`), amt: -l.amount, type:'out' });
+    if (d <= 15) { const w = alertWords(l, false, d); alerts.push({ kind: d<0?'expense':'warn', days: d, overdue: d<0, text: `${byId(state.suppliers,l.supplierId)?.name || 'Proveedor'} · ${w.text}`, sub: w.sub, amt: -l.amount, type:'out' }); }
   });
 
   const upcoming = alerts.filter(a => !a.overdue).sort((a, b) => a.days - b.days), overdue = alerts.filter(a => a.overdue).sort((a, b) => a.days - b.days);
@@ -2668,6 +2668,26 @@ function openAllocPicker(workId) {
   });
 }
 
+/* Texto del aviso: dice QUÉ vence. Si es un efecto ya emitido/recibido, vence el efecto (no la factura);
+   si se pactó efecto pero aún no existe, avisa de que falta emitirlo / recibirlo. */
+function alertWords(l, isOut, d) {
+  const nums = String(l.invoiceNumber || ''), fra = `${nums.includes(',') ? 'fras.' : 'fra.'} ${nums}`, dd = n => n === 1 ? '1 día' : `${n} días`;
+  const cuando = d < 0 ? `hace ${dd(-d)}` : d === 0 ? `hoy (${fmtDate(l.dueDate)})` : `en ${dd(d)} (${fmtDate(l.dueDate)})`;
+  const nom = m => m === 'Confirming' ? 'confirming' : m === 'Cheque' ? 'cheque' : 'pagaré';
+  const isEff = EFFECT_METHODS.includes(l.method), got = isOut ? effectReceived(l) : effectIssued(l);
+  if (isEff && got) {
+    const ef = `${l.method}${l.effectNumber ? ' nº ' + l.effectNumber : ''} de la ${fra}`;
+    if (isOut) return { text: ef, sub: d < 0 ? `El ${nom(l.method)} venció ${cuando}: ¿se ha cobrado?` : `El ${nom(l.method)} vence ${cuando}: se cobra en el banco` };
+    return { text: ef, sub: d < 0 ? `El ${nom(l.method)} venció ${cuando}: ¿se ha cargado en el banco?` : `El ${nom(l.method)} vence ${cuando}: ten el dinero en el banco` };
+  }
+  if (isEff) return isOut
+    ? { text: `Fra. ${l.invoiceNumber || ''} · ${nom(l.method)} sin recibir`, sub: d < 0 ? `Tenía que haber llegado el ${nom(l.method)} ${cuando}` : `Debería llegar el ${nom(l.method)} ${cuando}` }
+    : { text: `Fra. ${l.invoiceNumber || ''} · ${nom(l.method)} sin emitir`, sub: d < 0 ? `Había que emitir el ${nom(l.method)} ${cuando}` : `Toca emitir el ${nom(l.method)} ${cuando}` };
+  const how = l.method ? l.method.toLowerCase() : 'transferencia';
+  return isOut
+    ? { text: `Fra. ${l.invoiceNumber || ''}`, sub: d < 0 ? `Cobro (${how}) vencido ${cuando}` : `Se cobra (${how}) ${cuando}` }
+    : { text: `Fra. ${l.invoiceNumber || ''}`, sub: d < 0 ? `Pago (${how}) vencido ${cuando}` : `Toca pagar (${how}) ${cuando}` };
+}
 // ---------- PROVISION ----------
 /* ---------- PREVISIÓN SEGÚN PLAZOS PACTADOS (Resumen) ---------- */
 const PROV_TERM = 120; /* plazo provisional para clientes y proveedores que no tienen plazo indicado */
