@@ -654,12 +654,18 @@ function allInLines() {
 }
 
 /* vencimiento y forma de pago de una factura sacados de sus líneas de cobro/pago (ahí están los pagarés y confirmings) */
+/* Un efecto pactado (pagaré, confirming, cheque) que aún NO se ha emitido / recibido es solo una previsión:
+   su forma de pago sale «(previsto)» y su vencimiento en gris «(estimado)» = fecha de factura + plazo de la ficha.
+   Cuando se apunta el efecto de verdad, salen la forma y el vencimiento reales, en negro. Devuelve HTML ya escapado. */
+const isPlannedEffect = (l, doneKey) => EFFECT_METHODS.includes(l.method) && !l[doneKey] && !(doneKey === 'paid' ? effectIssued(l) : effectReceived(l));
 function linesDueMethod(lines, doneKey) {
   const pend = lines.filter(l => !l[doneKey]);
-  const use = pend.length ? pend : lines;
-  const dues = use.map(l => l.dueDate).filter(isoOk).sort();
-  const methods = [...new Set(lines.map(l => l.method).filter(Boolean))];
-  const due = dues.length ? fmtDate(dues[0]) + (dues.length > 1 ? ` <span class="muted">(+${dues.length - 1})</span>` : '') : '—';
+  const use = (pend.length ? pend : lines).filter(l => isoOk(l.dueDate)).sort((a, b) => a.dueDate < b.dueDate ? -1 : 1);
+  const first = use[0], est = first && isPlannedEffect(first, doneKey);
+  const grey = 'color:var(--ink-faint);font-style:italic';
+  const due = first ? (est ? `<span style="${grey}" title="Efecto aún sin ${doneKey === 'paid' ? 'emitir' : 'recibir'}: fecha de factura + plazo de la ficha">${fmtDate(first.dueDate)} (estimado)</span>` : fmtDate(first.dueDate)) + (use.length > 1 ? ` <span class="muted">(+${use.length - 1})</span>` : '') : '—';
+  const seen = new Set(), methods = [];
+  lines.forEach(l => { if (!l.method) return; const p = isPlannedEffect(l, doneKey), k = l.method + (p ? '*' : ''); if (seen.has(k)) return; seen.add(k); methods.push(p ? `<span style="${grey}">${escapeHtml(l.method)} (previsto)</span>` : escapeHtml(l.method)); });
   return { due, method: methods.join(' / ') || '—' };
 }
 function invoiceOutStatus(inv) {
@@ -687,6 +693,7 @@ function invoiceInStatus(inv) {
   let label, cls;
   if (minDue && daysUntil(minDue) < 0) { label = 'Vencida'; cls = 'pill-expense'; }
   else if (minDue && daysUntil(minDue) <= 7) { label = 'Vence pronto'; cls = 'pill-warn'; }
+  else if (pending.some(effectIssued)) { label = 'Efecto emitido'; cls = 'pill-info'; } /* ya hay confirming / pagaré hecho: solo falta que venza */
   else { label = 'Pendiente'; cls = 'pill-neutral'; }
   if (partial) label += ' · parcial';
   return { label, cls };
@@ -1284,9 +1291,11 @@ function renderPorPagar() {
   const groups = []; list.forEach(l => { let g = groups[groups.length - 1]; if (!g || g.supplierId !== l.supplierId) groups.push(g = { supplierId: l.supplierId, name: byId(state.suppliers, l.supplierId)?.name || '—', lines: [] }); g.lines.push(l); });
   const sum = arr => arr.reduce((s, l) => s + num(l.amount), 0);
   const total = sum(list), vencido = sum(list.filter(l => l.days !== null && l.days < 0)), semana = sum(list.filter(l => l.days !== null && l.days >= 0 && l.days <= 7));
-  const dueTxt = l => !l.due ? '—' : fmtDate(l.due) + (l.dueProv ? ' <span class="muted" title="Sin vencimiento ni plazo en el proveedor">(prov.)</span>' : '');
+  const GREY = 'color:var(--ink-faint);font-style:italic';
+  const dueTxt = l => !l.due ? '—' : isPlannedEffect(l, 'paid') ? `<span style="${GREY}" title="Efecto aún sin emitir: fecha de factura + plazo de la ficha">${fmtDate(l.due)} (estimado)</span>` : fmtDate(l.due) + (l.dueProv ? ' <span class="muted" title="Sin vencimiento ni plazo en el proveedor">(prov.)</span>' : '');
+  const methTxt = l => isPlannedEffect(l, 'paid') ? `<span style="${GREY}">${escapeHtml(l.method)} (previsto)</span>` : escapeHtml(l.method || '—');
   const dayPill = l => l.days === null ? '' : l.days < 0 ? `<span class="pill pill-expense">Vencida hace ${-l.days} d</span>` : l.days <= 7 ? `<span class="pill pill-warn">Vence en ${l.days} d</span>` : `<span class="pill pill-neutral">En ${l.days} d</span>`;
-  const sel = 'padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border-strong);background:var(--bg);color:var(--ink)';
+  const sel ='padding:7px 10px;border-radius:var(--radius);border:1px solid var(--border-strong);background:var(--bg);color:var(--ink)';
   document.getElementById('main').innerHTML = `
     <div class="topbar"><div><h1>Facturas por pagar</h1><div class="subtitle">Todas las facturas de proveedores pendientes de pago, con su vencimiento</div></div>
       <div><button class="btn" id="ppPrint">Imprimir</button></div></div>
@@ -1307,7 +1316,7 @@ function renderPorPagar() {
         <tbody>
           ${groups.length === 0 ? `<tr><td colspan="7" class="empty">${ppVenc ? 'No hay facturas con este filtro de vencimiento.' : 'No hay facturas de proveedores pendientes de pago.'}</td></tr>` : ''}
           ${groups.map(g => `<tr style="background:var(--surface-2);cursor:default"><td style="font-weight:700">${escapeHtml(g.name)} <span class="muted" style="font-weight:400">· ${g.lines.length}</span></td><td class="num" style="font-weight:700">${fmtMoney(sum(g.lines))}</td><td colspan="5"></td></tr>
-            ${g.lines.map(l => `<tr data-ppinv="${l.invoiceId}"><td class="mono">${escapeHtml(l.invoiceNumber || '—')}${l._implicit ? '' : ' <span class="muted">(parcial)</span>'}</td><td class="num">${fmtMoney(l.amount)}</td><td class="mono">${dueTxt(l)}</td><td>${dayPill(l)}</td><td class="mono">${fmtDate(l.invDate)}</td><td>${escapeHtml(l.method || '—')}${l.issuingBank ? ' <span class="muted">· ' + escapeHtml(l.issuingBank) + '</span>' : ''}</td><td class="muted">${escapeHtml(l.works || '—')}</td></tr>`).join('')}`).join('')}
+            ${g.lines.map(l => `<tr data-ppinv="${l.invoiceId}"><td class="mono">${escapeHtml(l.invoiceNumber || '—')}${l._implicit ? '' : ' <span class="muted">(parcial)</span>'}</td><td class="num">${fmtMoney(l.amount)}</td><td class="mono">${dueTxt(l)}</td><td>${dayPill(l)}</td><td class="mono">${fmtDate(l.invDate)}</td><td>${methTxt(l)}${l.issuingBank ? ' <span class="muted">· ' + escapeHtml(l.issuingBank) + '</span>' : ''}</td><td class="muted">${escapeHtml(l.works || '—')}</td></tr>`).join('')}`).join('')}
           ${groups.length ? `<tr><td style="font-weight:700;border-top:2px solid var(--border-strong)">TOTAL</td><td class="num" style="font-weight:700;border-top:2px solid var(--border-strong)">${fmtMoney(total)}</td><td colspan="5" style="border-top:2px solid var(--border-strong)"></td></tr>` : ''}
         </tbody></table></div>
     </div>`;
@@ -1735,7 +1744,7 @@ function renderClientDetail(id) {
                 const st = invoiceOutStatus(i);
                 const n = outLines(i).length;
                 const dm = linesDueMethod(outLines(i), 'collected');
-                return `<tr data-iid="${i.id}"><td class="mono">${escapeHtml(i.number||'—')}</td><td class="mono hide-m">${fmtDate(i.date)}</td><td class="muted hide-m">${escapeHtml(byId(state.works,i.workId)?.name||'—')}</td><td class="mono hide-m">${dm.due}</td><td class="hide-m">${escapeHtml(dm.method)}</td><td class="num">${fmtMoney(i.amount)}</td><td><span class="pill ${st.cls}">${st.label}</span></td><td><button class="link-btn" data-pay="${i.id}" data-paycol="invoicesOut">Pagos${n>1?' ('+n+')':''}</button></td></tr>`;
+                return `<tr data-iid="${i.id}"><td class="mono">${escapeHtml(i.number||'—')}</td><td class="mono hide-m">${fmtDate(i.date)}</td><td class="muted hide-m">${escapeHtml(byId(state.works,i.workId)?.name||'—')}</td><td class="mono hide-m">${dm.due}</td><td class="hide-m">${dm.method}</td><td class="num">${fmtMoney(i.amount)}</td><td><span class="pill ${st.cls}">${st.label}</span></td><td><button class="link-btn" data-pay="${i.id}" data-paycol="invoicesOut">Pagos${n>1?' ('+n+')':''}</button></td></tr>`;
               }).join('')}
             </tbody>
           </table></div>
@@ -2507,7 +2516,7 @@ function renderSupplierDetail(id) {
                 const st = invoiceInStatus(i);
                 const n = inLines(i).length;
                 const dm = linesDueMethod(inLines(i), 'paid');
-                return `<tr data-iid="${i.id}"><td class="mono">${escapeHtml(i.number||'—')}</td><td class="mono hide-m">${fmtDate(i.date)}</td><td class="muted hide-m">${escapeHtml(inWorkLabel(i))}</td><td class="mono hide-m">${dm.due}</td><td class="hide-m">${escapeHtml(dm.method)}</td><td class="num">${fmtMoney(i.amount)}</td><td><span class="pill ${st.cls}">${st.label}</span></td><td><button class="link-btn" data-pay="${i.id}" data-paycol="invoicesIn">Pagos${n>1?' ('+n+')':''}</button></td></tr>`;
+                return `<tr data-iid="${i.id}"><td class="mono">${escapeHtml(i.number||'—')}</td><td class="mono hide-m">${fmtDate(i.date)}</td><td class="muted hide-m">${escapeHtml(inWorkLabel(i))}</td><td class="mono hide-m">${dm.due}</td><td class="hide-m">${dm.method}</td><td class="num">${fmtMoney(i.amount)}</td><td><span class="pill ${st.cls}">${st.label}</span></td><td><button class="link-btn" data-pay="${i.id}" data-paycol="invoicesIn">Pagos${n>1?' ('+n+')':''}</button></td></tr>`;
               }).join('')}
             </tbody>
           </table></div>
@@ -3075,7 +3084,7 @@ function renderProvision() {
     return `<div class="card"><h2>${title}</h2><div class="table-wrap"><table>
       <thead><tr><th>Fecha</th><th>${who}</th><th>Factura</th><th>Forma de pago</th><th style="text-align:right">Importe</th><th></th></tr></thead><tbody>
         ${list.length === 0 ? '<tr><td colspan="6" class="empty">No hay nada previsto en este plazo.</td></tr>' : ''}
-        ${list.map(({ i, n }) => `<tr style="cursor:default"><td class="mono">${fmtDate(i.date)}${i.overdue ? ' <span class="pill pill-expense">Vencido</span>' : ''}${i.prov ? ' <span class="muted" title="Sin vencimiento: fecha de factura + plazo">(prov.)</span>' : ''}</td><td>${escapeHtml(i.name || i.label)}</td><td class="mono">${escapeHtml(i.invNum || '—')}</td><td class="muted">${escapeHtml(i.method || '—')}${kind === 'in' ? (i.cat === 'cobro' ? ' <span class="pill pill-income">asegurado</span>' : '') : ''}</td><td class="num" style="${col(i)}">${kind === 'in' ? '+' : '−'}${fmtMoney(i.amount)}</td><td style="white-space:nowrap">${i.pay ? `<button class="btn btn-sm ${kind === 'in' ? '' : 'btn-primary'}" data-provpay="${n}"${kind === 'in' ? ' style="border-color:#14663c;color:#14663c;font-weight:600"' : ''}>${kind === 'in' ? 'Cobrar' : 'Pagar'}</button>` : ''}</td></tr>`).join('')}
+        ${list.map(({ i, n }) => `<tr style="cursor:default"><td class="mono">${fmtDate(i.date)}${i.overdue ? ' <span class="pill pill-expense">Vencido</span>' : ''}${i.prov ? ' <span class="muted" title="Sin vencimiento: fecha de factura + plazo">(prov.)</span>' : ''}</td><td>${escapeHtml(i.name || i.label)}</td><td class="mono">${escapeHtml(i.invNum || '—')}</td><td class="muted">${escapeHtml(i.method || '—')}${kind === 'in' ? (i.cat === 'cobro' ? ' <span class="pill pill-income">asegurado</span>' : '') : (i.cat === 'proveedor' && EFFECT_METHODS.includes(i.method) ? ' <span style="font-style:italic">(sin emitir · vto. estimado)</span>' : '')}</td><td class="num" style="${col(i)}">${kind === 'in' ? '+' : '−'}${fmtMoney(i.amount)}</td><td style="white-space:nowrap">${i.pay ? `<button class="btn btn-sm ${kind === 'in' ? '' : 'btn-primary'}" data-provpay="${n}"${kind === 'in' ? ' style="border-color:#14663c;color:#14663c;font-weight:600"' : ''}>${kind === 'in' ? 'Cobrar' : 'Pagar'}</button>` : ''}</td></tr>`).join('')}
         ${list.length ? `<tr style="border-top:2px solid var(--border-strong)"><td colspan="4"><strong>${totLabel}</strong>${venc > 0.005 ? ` <span class="muted">· de ello vencido ${fmtMoney(venc)}</span>` : ''}</td><td class="num"><strong style="${kind === 'in' ? G : RED}">${kind === 'in' ? '+' : '−'}${fmtMoney(tot)}</strong></td><td></td></tr>` : ''}
       </tbody></table></div><div class="muted" style="margin-top:6px;font-size:12px">${hint}</div></div>`;
   };
